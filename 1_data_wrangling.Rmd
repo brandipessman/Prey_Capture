@@ -1,0 +1,303 @@
+---
+title: "Wrangling Data"
+author: "Brandi Pessman"
+date: "2024-12-10"
+output: html_document
+---
+
+# Load Libraries
+
+```{r libraries}
+library(tidyverse)
+library(lubridate)
+```
+
+# Import Data
+
+```{r import}
+prey_import <- read.csv("data/prey_capture_2021.csv") %>% 
+  # only females that survived and no silent treatments
+  filter(sex == "F",
+         died_yn == "n",
+         treatment1 == "loud" | treatment1 == "quiet",
+         treatment2 == "loud" | treatment2 == "quiet") 
+
+spider_measurements <- read.csv("data/spider_measurements.csv", header = TRUE) %>% 
+  filter(body_part == "carapace_w") %>% 
+  dplyr::select(-angle, -measure) 
+
+web <- read.csv("data/web_pictures.csv", header = TRUE) %>% 
+  filter(Week < 4) %>% 
+  mutate(site = fct_recode(noise_location, "Rural" = "rural", "Urban" = "city"),
+         corrected = pic_mean / black_mean) %>% 
+  dplyr::select(spider, site, Week, pic_mean, corrected, StdDev)
+
+mating_import <- read.csv("data/mating_2022.csv") 
+
+learning_import <- read.csv("data/learning_scc.csv", header = TRUE)
+```
+
+# Prey Capture
+
+```{r spider condition}
+prey_cond <- prey_import %>% 
+  dplyr::select(spider, mass_mg)
+
+prey_cond <- left_join(prey_cond, spider_measurements, by = "spider")
+rownames(prey_cond) <- c(prey_cond$spider)
+cond <- data.frame(cbind(condition = residuals(lm(log(mass_mg) ~ log(length), data = prey_cond)),
+                         spider = names(residuals(lm(log(mass_mg) ~ log(length), data = prey_cond)))))
+prey_cond <- full_join(prey_cond, cond, by = "spider") %>% 
+  mutate(condition = as.numeric(condition)) %>% 
+  dplyr::select(spider, condition)
+```
+
+```{r prey capture}
+prey_main <- prey_import %>% 
+  # treatment and noise location factor wrangling
+  mutate(treatment1 = fct_recode(treatment1, "Loud" = "loud", "Quiet" = "quiet"),
+         treatment2 = fct_recode(treatment2, "Loud" = "loud", "Quiet" = "quiet"),
+         treatment1 = fct_relevel(treatment1, "Quiet", "Loud"),
+         treatment2 = fct_relevel(treatment2, "Quiet", "Loud"),
+         site = fct_recode(noise_location, "Urban" = "city", "Rural" = "rural"),
+         site = fct_relevel(factor(site), "Rural", "Urban")) %>% 
+  unite("site_t1", c(site, treatment1), sep = "_", remove = FALSE) %>% 
+  unite("t1_t2", c(treatment1, treatment2), sep = "_", remove = FALSE) %>% 
+  mutate(site_t1 = fct_relevel(factor(site_t1), "Rural_Quiet", "Urban_Quiet", "Rural_Loud", "Urban_Loud"),
+         t1_t2 = fct_relevel(factor(t1_t2), "Quiet_Quiet", "Quiet_Loud", "Loud_Quiet", "Loud_Loud")) %>% 
+  # age and timing wrangling
+  # age at beginning of experiment
+  mutate(age = ifelse(line_date1 == "9/4/21", as.numeric(mdy("09/04/21") - mdy(lastmolt)),
+                      as.numeric(mdy("09/05/21") - mdy(lastmolt))), 
+         lastmolt = mdy(lastmolt),
+         date_collected = mdy(date_collected),
+         # juvenile time in lab
+         lab2mature = as.numeric(lastmolt - date_collected), 
+         # time in spider room
+         lab2silence = as.numeric(mdy(date_added) - date_collected),
+         field_attack_time = ifelse(vibr_sec == "no reaction", 30, as.numeric(vibr_sec)),
+         field_attack_time_ms = field_attack_time * 1000) 
+
+prey_main <- left_join(prey_main, prey_cond, by = "spider")
+
+prey_main <- prey_main %>%
+  # pivoting and reformatting (remove trial 1, completed on 'silent' web)
+  dplyr::select(spider, mass_mg, condition, age, field_attack_time, field_attack_time_ms, date_collected, lastmolt, lab2mature, lab2silence, site, treatment1, treatment2, site_t1, t1_t2, silk_mass_bs, tb_2, tb_3, tb_4, tb_5, tb_6, tb_7, tb_8, tb_9, tb_10, tb_11, tb_12, prey_2, prey_3, prey_4, prey_5, prey_6, prey_7, prey_8, prey_9, prey_10, prey_11, prey_12) %>% 
+  pivot_longer(cols = c(tb_2:prey_12), names_to = "stimulus_trial", values_to = "attack_time") %>% 
+  separate(col = stimulus_trial, into = c("stimulus", "trial"), sep = "_") %>%
+  mutate(stimulus = fct_recode(stimulus, "Artificial" = "tb", "Live" = "prey"),
+         trial = as.numeric(trial) - 1,
+         spider = factor(spider),
+         # give a 1 or 0 by whether or not they attacked in 30 s 
+         attack = ifelse(attack_time == 30, 0, 1),
+         attack_time_ms = attack_time * 1000,
+         web_treatment = ifelse(trial <= 5, "web1_t1", 
+                                ifelse(trial == 6, "web1_t2", "web2_t2")),
+         treatment = factor(ifelse(trial < 6, paste0(treatment1, "1"), paste0(treatment2, "2"))),
+         #treatment = ifelse(treatment == 1, "Quiet1", "Quiet2", "Loud"),
+         treatment = fct_relevel(treatment, "Quiet1", "Quiet2", "Loud1", "Loud2")) %>% 
+  dplyr::select(spider, mass_mg, condition, age, field_attack_time, field_attack_time_ms, date_collected, lastmolt, lab2mature, lab2silence, silk_mass_bs, site, treatment1, treatment2, site_t1, t1_t2, web_treatment, treatment, trial, stimulus, attack, attack_time, attack_time_ms)
+```
+
+```{r spider_df}
+spider_df <- prey_main %>% 
+  dplyr::select(spider, age, mass_mg, condition, field_attack_time, field_attack_time_ms, date_collected, lastmolt, lab2mature, lab2silence, site, treatment1, treatment2, site_t1, t1_t2, silk_mass_bs) %>%
+  mutate(field_attack = ifelse(field_attack_time == 30, 0, 1)) %>% 
+  unique()
+
+web <- left_join(spider_df, web, by = c("spider", "site")) %>% 
+  mutate(silk_per_body = silk_mass_bs / (mass_mg / 1000))
+```
+
+```{r rapid noise change}
+before_avg <- prey_main %>% 
+  filter(stimulus == "Artificial",
+         attack == 1,
+         trial < 6) %>% 
+  dplyr::select(-attack) %>% 
+  group_by(spider, site, site_t1, treatment1, treatment2, t1_t2) %>% 
+  summarize(attack_time = mean(attack_time),
+            attack_time_ms = floor(attack_time * 1000), # removes decimals which don't work for glm.nb
+            trial = "Before")
+
+switch <- prey_main %>% 
+  filter(stimulus == "Artificial", 
+         trial == 6,
+         attack == 1) %>% 
+  dplyr::select(spider, site, site_t1, treatment1, treatment2, t1_t2, attack_time, attack_time_ms) %>%
+  mutate(trial = "After") 
+
+
+switch <- rbind(switch, before_avg) %>% 
+  mutate(treatment1 = as.character(treatment1),
+         treatment2 = as.character(treatment2),
+         treatment = ifelse(trial == "Before", treatment1, treatment2),
+         treatment = fct_relevel(factor(treatment), "Quiet", "Loud"),
+         treatment1 = factor(treatment1),
+         treatment2 = factor(treatment2),
+         treatment1 = fct_relevel(factor(treatment1), "Quiet", "Loud"),
+         treatment2 = fct_relevel(factor(treatment2), "Quiet", "Loud"),
+         t1_t2_abb = fct_recode(factor(t1_t2), "L-L" = "Loud_Loud", "Q-Q" = "Quiet_Quiet", "L-Q" = "Loud_Quiet", "Q-L" = "Quiet_Loud"),
+         t1_t2_abb = fct_relevel(factor(t1_t2_abb), "Q-Q", "L-L", "L-Q", "Q-L"))
+```
+
+# Mating
+
+Number of Bobs
+- bobs_before_quiescent = bob # from start to quiescent
+- bobs_before = bob # from start to copulation
+- bobs_quiescent = bob # from start of quiescent to copulation
+- bobs_mating1 = bob # during first copulation
+- bobs_after = bob # from after the end of the first copulation bout
+
+Number of Bouts
+- quiescent_bouts = number of times females entered quiescence during the first copulation bout (?)
+- num_matings = number of copulation bouts
+
+**TIMING**
+Before Quiescence 
+- quiescent_lat_s = seconds from first bob (?) to quiescence
+
+Pre-Copulation Quiescence 
+- quiescent_mate = seconds from the start of quiescence to the start of copulation
+
+During Copulation 
+- total_quiescent1 = seconds female was quiescent during the first copulation (from the beginning of quiescence or beginning of copulation?)
+- remains_quiescent = Y or N whether female ever wakes during first (?) copulation
+- total_mating1 = seconds from start to end of first copulation bout
+- total_mating2 = seconds from start to end of second copulation bout
+- total_mating3 = seconds from start to end of third copulation bout
+- partial_mating = seconds of copulation for trial where video recording was interupted (start of copulation bout to video end)
+- total_mating = sum of total_mating1, 2, and 3 and partial
+
+Pre-Copulation + Copulation Length
+- mating_lat_s = seconds from first bob (?) to copulation
+
+Video Length
+- total_video = seconds of video length
+
+```{r mating}
+mating <- mating_import %>% 
+  mutate(F_age = as.numeric(mdy(Mate_Date) - mdy(F_mature)),
+         M_age = as.numeric(mdy(Mate_Date) - mdy(M_mature)),
+         age_diff = abs(F_age - M_age),
+         mass_diff = abs(F_mass_mg - M_mass_mg),
+         Treatment = fct_relevel(Treatment, "Quiet", "Loud"),
+         Site = fct_relevel(Site, "Rural", "Urban")) %>% 
+  filter(! is.na(F_age)) %>% 
+  unite("site_treatment", c(Site, Treatment), sep = "_", remove = FALSE)
+
+rownames(mating) <- c(mating$F_ID)
+cond_f <- data.frame(cbind(F_condition = residuals(lm(log(F_mass_mg) ~ log(F_ceph_width_mm), 
+                                                      data = mating)), 
+                           F_ID = names(residuals(lm(log(F_mass_mg) ~ log(F_ceph_width_mm), 
+                                                     data = mating)))))
+# add condition to the dataset
+mating <- full_join(mating, cond_f, by = "F_ID") %>% 
+  mutate(F_condition = as.numeric(F_condition))
+
+rownames(mating) <- c(mating$M_ID)
+cond_m <- data.frame(cbind(M_condition = residuals(lm(log(M_mass_mg) ~ log(M_ceph_width_mm),
+                                                      data = mating)),
+                           M_ID = names(residuals(lm(log(M_mass_mg) ~ log(M_ceph_width_mm), 
+                                                     data = mating)))))
+# add condition to the dataset
+mating <- full_join(mating, cond_m, by = "M_ID") %>% 
+  mutate(M_condition = as.numeric(M_condition))
+
+mating <- mating %>% 
+  mutate(cond_diff = abs(F_condition - M_condition),
+         # whether the female woke at any point before or during the first copulation bout
+         quiescent_interuption = ifelse(quiescent_bouts > 1, 1, 0),
+         # whether the female remained quiescent after copulation ended
+         remains_quiescent = ifelse(remains_quiescent == "Y", 1, 0),
+         bob_rate_before_quiescent = bobs_before_quiescent / (quiescent_lat_s / 60),
+         bobs_quiescent = bobs_before - bobs_before_quiescent,
+         bob_rate_quiescent = bobs_quiescent / (quiescent_mate / 60),
+         bob_rate_mating1 = bobs_mating1 / (total_mating1 / 60),
+         more_bobs_before_cop = ifelse(bobs_before > bobs_mating1, 1, 0)) %>% 
+  dplyr::select(F_ID, F_age, F_condition, M_ID, M_age, M_condition, age_diff, cond_diff, Site, Treatment, site_treatment, Mate_Date, Mated, 
+                bobs_before_quiescent, bobs_quiescent, bobs_mating1, 
+                bob_rate_before_quiescent, bob_rate_quiescent, bob_rate_mating1,
+                quiescent_lat_s, quiescent_mate, total_mating1, quiescent_interuption, remains_quiescent, total_video, num_matings)
+```
+
+# Container Levels
+
+```{r container levels}
+datapath = "/Users/bjpessman/Documents/phd_research_code/Prey_Capture/playback_tests"
+setwd(datapath)
+txt_files_ls = list.files(path = datapath, pattern = "*.txt")
+txt_files_df <- lapply(txt_files_ls,
+                       function(x){
+                         read.table(file = x, header = TRUE, sep ="\t")
+                         })
+for (i in 1:length(txt_files_df)){
+  txt_files_df[[i]] <- cbind(txt_files_df[[i]],txt_files_ls[i])
+  }
+main <- do.call("rbind", lapply(txt_files_df, as.data.frame))
+main <- main %>%
+  dplyr::select(Low.Freq..Hz., Inband.Power..dB.FS., `txt_files_ls[i]`)
+colnames(main) <- c("Low_Freq", "Power", "File")
+main <- main %>%
+  separate_wider_delim(cols = File, names = c("Name", "Ext"), ".") %>%
+  separate_wider_delim(cols = Name, names = c("Tub", "Container", "Position", "Treatment"), "_") %>%
+  separate(col = Tub, into = c("Label_Tub", "Tub"), sep = -1) %>%
+  separate(col = Container, into = c("Label_Cont", "Container"), sep = -1) %>%
+  dplyr::select(Treatment, Position, Tub, Container, Low_Freq, Power) %>% 
+  unite(Tub_Cont, c(Tub, Container), sep = "_", remove = FALSE) %>% 
+  filter(Low_Freq < 1000,
+         Position == "bottom") %>% 
+  mutate(Treatment = factor(Treatment),
+         Treatment = fct_recode(Treatment, "Loud" = "loud", "Quiet" = "quiet", "Silent" = "silent"),
+         Treatment = fct_relevel(Treatment, "Silent", "Quiet", "Loud"))
+
+silent <- main %>% 
+  filter(Treatment == "Silent",
+         #Tub_Cont == "1_3"
+         ) %>% 
+  mutate(Power_silent_dB = Power,
+         snr_silent_u = 10^(Power_silent_dB/10),
+         snr_silent_dB = 10 * log10(snr_silent_u)) %>% 
+  group_by(Low_Freq) %>% 
+  summarize(snr_silent_dB_avg = mean(snr_silent_dB))
+  #dplyr::select(Low_Freq, Power_silent) 
+
+playback <- main %>% 
+  filter(! Treatment == "Silent") %>% 
+  mutate(Power_playback = Power) %>% 
+  dplyr::select(-Power) 
+
+playback <- full_join(playback, silent, by = "Low_Freq") %>% 
+  mutate(Power = Power_playback - snr_silent_dB_avg)
+```
+
+# Learning with SCC Animal Behavior Class
+
+```{r learning}
+learning_sum1 <- learning_import %>% 
+  dplyr::select(SpiderID, Site, Treatment, Eggs2, Cond_Attack_1, Avg_Test) %>% 
+  pivot_longer(cols = c(Cond_Attack_1, Avg_Test), names_to = "Measure", values_to = "TimeToAttack") %>% 
+  mutate(Measure = fct_recode(Measure, "Conditioning1" = "Cond_Attack_1", "TestingAvg" = "Avg_Test"))
+
+
+learning_sum2 <- learning_import %>% 
+  dplyr::select(SpiderID, Site, Treatment, Eggs2, Attacked_1, Attacked_Test) %>% 
+  pivot_longer(cols = c(Attacked_1, Attacked_Test), names_to = "Measure", values_to = "Attacked") %>% 
+  mutate(Measure = fct_recode(Measure, "Conditioning1" = "Attacked_1", "TestingAvg" = "Attacked_Test"),
+         Attacked = ifelse(Attacked == "Y", 1, 0))
+
+learning <- full_join(learning_sum1, learning_sum2, by = c("SpiderID", "Site","Treatment", "Eggs2", "Measure"))
+```
+
+# Save RDS 
+
+```{r save}
+saveRDS(prey_main, "wrangled_data/prey_main.rds")
+saveRDS(spider_df, "wrangled_data/spider_df.rds")
+saveRDS(switch, "wrangled_data/switch.rds")
+saveRDS(web, "wrangled_data/web.rds")
+saveRDS(mating, "wrangled_data/mating.rds")
+saveRDS(playback, "wrangled_data/playback.rds")
+saveRDS(learning, "wrangled_data/learning.rds")
+```

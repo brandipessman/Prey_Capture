@@ -1,0 +1,1036 @@
+---
+title: "Mating"
+author: "Brandi Pessman"
+date: "2024-12-12"
+output: html_document
+---
+
+# Load Libraries
+
+```{r libraries}
+library(tidyverse)
+library(MASS)
+library(flextable)
+library(emmeans)
+library(pscl)
+
+two_colors = c("#1b9e77", "#d95f02")
+```
+
+# Function
+
+```{r predict.zeroinfl}
+predict.zeroinfl <- function(object, newdata, type = c("response", "prob"),
+                             se=FALSE,MC=1000,level=.95,
+                             na.action = na.pass, ...)
+{
+    type <- match.arg(type)
+    ## if no new data supplied
+    if(missing(newdata)){
+      rval <- object$fitted.values
+        if(!is.null(object$x)) {
+	  X <- object$x$count
+	  Z <- object$x$zero
+	}
+        else if(!is.null(object$model)) {
+          X <- model.matrix(object$terms$count, object$model, contrasts = object$contrasts$count)
+          Z <- model.matrix(object$terms$zero,  object$model, contrasts = object$contrasts$zero)	
+	}
+        else {
+	  stop("no X and/or Z matrices can be extracted from fitted model")
+	}
+      if(type == "prob") {
+        mu <- exp(X %*% object$coefficients$count)[,1]
+        phi <- object$linkinv(Z %*% object$coefficients$zero)[,1]
+      }
+    }
+    else {
+      mf <- model.frame(delete.response(object$terms$full), newdata, na.action = na.action, xlev = object$levels)
+      X <- model.matrix(delete.response(object$terms$count), mf, contrasts = object$contrasts$count)
+      Z <- model.matrix(delete.response(object$terms$zero),  mf, contrasts = object$contrasts$zero)
+      mu <- exp(X %*% object$coefficients$count)[,1]
+      phi <- object$linkinv(Z %*% object$coefficients$zero)[,1]
+      rval <- (1-phi) * mu
+    }   
+    if(se & !is.null(X) & !is.null(Z)){
+      require(mvtnorm)
+      vc <- -solve(object$optim$hessian)
+      kx <- length(object$coefficients$count)
+      kz <- length(object$coefficients$zero)
+      parms <- object$optim$par
+      if(type!="prob"){
+        yhat.sim <- matrix(NA,MC,dim(X)[1])
+        for(i in 1:MC){
+          cat(paste("MC iterate",i,"of",MC,"\n"))
+          parms.sim <- rmvnorm(n=1,mean=parms,sigma=vc)
+          beta <- parms.sim[1:kx]
+          gamma <- parms.sim[(kx+1):(kx+kz)]
+          mu.sim <- exp(X%*%beta)[,1]
+          phi.sim <- object$linkinv(Z%*%gamma)[,1]
+          yhat.sim[i,] <- (1-phi.sim)*mu.sim
+        }
+      }
+      out <- list()
+      out$lower <- apply(yhat.sim,2,quantile,(1-level)/2)
+      out$upper <- apply(yhat.sim,2,quantile,1-((1-level)/2))
+      out$se <- apply(yhat.sim,2,sd)
+    }
+    ## predicted probabilities
+    if(type == "prob") {
+      if(!is.null(object$y)) y <- object$y
+        else if(!is.null(object$model)) y <- model.response(object$model)
+	else stop("predicted probabilities cannot be computed for fits with y = FALSE and model = FALSE")
+      yUnique <- min(y):max(y)
+      nUnique <- length(yUnique)
+      rval <- matrix(NA, nrow = length(rval), ncol = nUnique)
+      dimnames(rval) <- list(rownames(X), yUnique)
+      switch(object$dist,
+             "poisson" = {
+    	       rval[, 1] <- phi + (1-phi) * exp(-mu)
+               for(i in 2:nUnique) rval[,i] <- (1-phi) * dpois(yUnique[i], lambda = mu)
+             },
+	     "negbin" = {
+               theta <- object$theta
+               rval[, 1] <- phi + (1-phi) * dnbinom(0, mu = mu, size = theta)
+               for(i in 2:nUnique) rval[,i] <- (1-phi) * dnbinom(yUnique[i], mu = mu, size = theta)
+             },
+	     "geometric" = {
+               rval[, 1] <- phi + (1-phi) * dnbinom(0, mu = mu, size = 1)
+               for(i in 2:nUnique) rval[,i] <- (1-phi) * dnbinom(yUnique[i], mu = mu, size = 1)
+	     })
+    }
+    if(se)
+      rval <- list(rval,out)
+    rval
+}
+```
+
+# Import Data
+
+```{r import}
+mating <- readRDS("wrangled_data/mating.rds")
+mated <- mating %>% 
+  filter(Mated == 1,
+         ! is.na(total_mating1))
+         
+field_attack <- read.csv("data/field_attack_2022.csv") %>% 
+  mutate(attacked = ifelse(Attack_Time == 30, 0, 1),
+         Attack_Time = ceiling(Attack_Time))
+field_attacked <- field_attack %>% 
+  filter(attacked == 1)
+```
+
+# Female Attack Rates in the Field
+
+```{r field attack}
+field_attack %>% 
+  group_by(Origin, attacked) %>% 
+  count()
+  
+model <- glm.nb(Attack_Time ~ Origin, data = field_attacked)
+car::Anova(model)
+```
+
+# Spider Description
+
+## Age
+
+```{r female age}
+# raw
+mating %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(F_age),
+            se = plotrix::std.error(F_age)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("Female Age (Days Since Mature)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test(mating$F_age) # normal
+model <- lm(F_age ~ Site * Treatment, data = mating)
+car::Anova(model) # no diff
+```
+
+```{r male age}
+# raw
+mating %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(M_age),
+            se = plotrix::std.error(M_age)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("Male Age (Days Since Mature)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test(mating$M_age) # normal
+model <- lm(M_age ~ Site * Treatment, data = mating)
+car::Anova(model) # no diff
+```
+
+```{r age difference}
+# raw
+mating %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(age_diff),
+            se = plotrix::std.error(age_diff)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("Age Difference (Days Since Mature)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test((mating$age_diff)) # not normal
+model <- lm(age_diff ~ Site * Treatment, data = mating)
+car::Anova(model) # no diff
+kruskal.test(age_diff ~ site_treatment, data = mating) # no diff
+```
+
+## Condition
+
+```{r female condition}
+# raw
+mating %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(F_condition),
+            se = plotrix::std.error(F_condition)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("Female Condition") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test((mating$F_condition)) # normal
+model <- lm(F_condition ~ Site * Treatment, data = mating)
+car::Anova(model) # no diff
+```
+
+```{r male condition}
+# raw
+mating %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(M_condition),
+            se = plotrix::std.error(M_condition)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("Male Condition") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test((mating$M_condition)) # normal
+model <- lm(M_condition ~ Site * Treatment, data = mating)
+car::Anova(model) # no diff
+```
+
+```{r condition difference}
+# raw
+mating %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(cond_diff),
+            se = plotrix::std.error(cond_diff)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("Condition Difference") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test(sqrt(mating$cond_diff)) # normal
+model <- lm(sqrt(cond_diff) ~ Site * Treatment, data = mating)
+model <- lm((cond_diff) ~ Site * Treatment, data = mating)
+car::Anova(model) # no diff
+```
+
+```{r age_condition_table}
+age_condition_table <- read.csv(file = "data/age_condition_table.csv", header = TRUE) # for predictor stats table 
+
+age_condition_table <- age_condition_table %>% 
+  mutate(Predictor = factor(Predictor),
+         Predictor = fct_recode(Predictor, "Origin" = "Rural_Urban",
+                               "Origin x Simulated Noise Environment" = "Int",
+                               "Simulated Noise Environment" = "Treatment"),
+         Mean_se = factor(Mean_se),
+         Mean_se = fct_recode(Mean_se, "60.15 ± 2.23" = "60.15_2.23",
+                                "59.35 ± 2.00" = "59.35_2.00",
+                                "3.02 ± 0.76" = "3.02_0.76"))
+
+age_condition_table <- age_condition_table %>% 
+  mutate(Pvalue = factor(Pvalue),
+         Pvalue = fct_recode(Pvalue, "0.088 ." = "0.088",
+                        "0.071 ." = "0.071"))
+
+colnames(age_condition_table) <- c('Feature', 'Sex','Predictor', 'Mean ± SE', 'F-Value', 'P-Value')
+
+flextable(age_condition_table[ , 1:6]) %>% 
+  autofit() %>% 
+  merge_v(j = c('Feature', 'Sex', 'Mean ± SE'), part = "body") %>% 
+  bold(bold = TRUE, part = "header") %>% 
+  hline_bottom(part = "body", border = officer::fp_border(width = 2)) %>% 
+  border(j = 'Feature', border.bottom = officer::fp_border(width = 2)) %>% 
+  hline(i = c("3", "6", "12", "15"), j = c("2":"6"), part = "body", border = officer::fp_border(width = 1, color = "grey")) %>%  
+  hline(i = c("9"), part = "body", border = officer::fp_border(width = 2)) %>%  
+  fontsize(size = 10, part = "all") %>% 
+  align(align = "center", part = "all") %>% 
+  valign(valign = "top", part = "all") %>% 
+  fix_border_issues() #%>% 
+  #save_as_image(path = here::here("figures/age_condition_table.png"))
+```
+
+# Trials
+
+## Mated or Not
+
+```{r mated or not}
+mating %>% 
+  group_by(Site, Treatment) %>% 
+  count()
+
+# raw 
+mating %>% 
+  filter(Mated == 1) %>% 
+  group_by(Site, Treatment) %>% 
+    count() %>% 
+    mutate(prop = ifelse(Site == "Rural" & Treatment == "Quiet", n/11,
+                  ifelse(Site == "Rural" & Treatment == "Loud", n/13,
+                  ifelse(Site == "Urban" & Treatment == "Quiet", n/11,
+                  ifelse(Site == "Urban" & Treatment == "Loud", n/11))))) %>% 
+  ggplot() +
+  geom_bar(aes(x = Site, y = prop, fill = Treatment), stat = "identity", position = position_dodge(width = 1)) +
+  scale_fill_manual(values = c("#1b9e77", "#d95f02")) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0,1,0.2)) +
+  xlab("") +
+  ylab("Proportion that Mated") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test(mating$Mated) # not normal
+model <- glm(Mated ~ Site * Treatment, family = binomial, data = mating)
+car::Anova(model) # no diff
+emmeans(model, pairwise ~ Site | Treatment)
+emmeans(model, pairwise ~ Treatment | Site)
+```
+
+## Number of Copulation Bouts
+
+```{r number copulation bouts}
+mating %>% 
+  group_by(Site, Treatment, num_matings) %>% 
+  count()
+
+mating %>% 
+  group_by(num_matings) %>% 
+  count()
+
+max(na.omit(mating$total_video))/3600
+min(na.omit(mating$total_video))/3600
+mean(na.omit(mating$total_video))/3600
+```
+
+## Those that mated
+
+### Number of Bobs
+
+```{r bobs before quiescence}
+# raw
+sum <- mated %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(bobs_before_quiescent),
+            se = plotrix::std.error(bobs_before_quiescent))
+
+  ggplot() +
+  geom_jitter(aes(x = Site, y = bobs_before_quiescent, color = Treatment), width = 0.25, data = mated) +
+  geom_point(aes(x = Site, y = mean, color = Treatment), data = sum) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25, data = sum) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("No. Bobs Before Quiescence") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+  
+ggplot() +
+  geom_point(aes(x = bobs_before_quiescent, y = quiescent_lat_s), data = mated) +
+geom_smooth(aes(x = bobs_before_quiescent, y = quiescent_lat_s), data = mated, method = "lm") +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("No. Bobs Before Quiescence") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+model <- zeroinfl(bobs_before_quiescent ~ Site * Treatment, data = mated, dist = "negbin")
+
+model2 <- zeroinfl(bobs_before_quiescent ~ quiescent_lat_s, data = mated, dist = "negbin")
+
+car::Anova(model)
+car::Anova(model2)
+emmeans(model, pairwise ~ Site | Treatment)
+emmeans(model, pairwise ~ Treatment | Site)
+
+nd <- data.frame(expand_grid(Site = levels(mated$Site),
+                             Treatment = levels(mated$Treatment)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(Site = fct_relevel(Site, "Rural", "Urban"),
+         Treatment = fct_relevel(Treatment, "Quiet", "Loud"))
+colnames(predictions) <- c("Site", "Treatment", "fit", "lower", "upper", "se.fit")
+
+ggplot() +
+  geom_jitter(aes(x = Site, y = bobs_before_quiescent, color = Treatment), width = 0.25, alpha = 0.5, data = mated) +
+  geom_line(aes(x = Site, y = fit, group = Treatment, color = Treatment), position = position_dodge(width = 0.25), linewidth = 0.5, data = predictions) +
+  geom_point(aes(x = Site, y = fit, color = Treatment), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = Site, ymax = fit + (se.fit), ymin = fit - (se.fit), color = Treatment), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Simulated Noise \nEnvironment", values = two_colors) +
+  scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, 25)) +
+  ylab("No. Pre-Quiescent Abdomen Bobs") +
+  xlab("Origin") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+# 400 x 425
+```
+
+```{r bobs pre-copulation quiescence}
+# raw
+mated %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(bobs_quiescent),
+            se = plotrix::std.error(bobs_quiescent)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("No. Bobs During Pre-Copulation Quiescence") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test(log(mated$bobs_quiescent))
+#model <- lm(log(bobs_quiescent) ~ Site * Treatment, data = mated)
+model <- glm.nb(bobs_quiescent ~ Site * Treatment, data = mated)
+car::Anova(model)
+emmeans(model, pairwise ~ Site | Treatment)
+emmeans(model, pairwise ~ Treatment | Site)
+
+nd <- data.frame(expand_grid(Site = levels(mated$Site),
+                             Treatment = levels(mated$Treatment)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(Site = fct_relevel(Site, "Rural", "Urban"),
+         Treatment = fct_relevel(Treatment, "Quiet", "Loud"))
+
+ggplot() +
+  geom_jitter(aes(x = Site, y = bobs_quiescent, color = Treatment), width = 0.25, alpha = 0.5, data = mated) +
+  geom_point(aes(x = Site, y = fit, color = Treatment), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = Site, ymax = fit + (se.fit), ymin = fit - (se.fit), color = Treatment), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Simulated Noise \nEnvironment", values = two_colors) +
+  scale_y_continuous(limits = c(0, 250), breaks = seq(0, 250, 50)) +
+  ylab("No. Pre-Copulation Quiescence Abdomen Bobs") +
+  xlab("Origin") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+# 400 x 425
+```
+
+```{r bobs during copulation}
+# raw
+mated %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(bobs_mating1),
+            se = plotrix::std.error(bobs_mating1)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("No. Bobs During First Copulation") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+
+shapiro.test((mated$bobs_mating1))
+model <- glm.nb(bobs_mating1 ~ Site * Treatment, data = mated)
+car::Anova(model)
+emmeans(model, pairwise ~ Site | Treatment)
+emmeans(model, pairwise ~ Treatment | Site)
+
+nd <- data.frame(expand_grid(Site = levels(mated$Site),
+                             Treatment = levels(mated$Treatment)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(Site = fct_relevel(Site, "Rural", "Urban"),
+         Treatment = fct_relevel(Treatment, "Quiet", "Loud"))
+
+ggplot() +
+  geom_jitter(aes(x = Site, y = bobs_mating1, color = Treatment), width = 0.25, alpha = 0.5, data = mated) +
+  geom_point(aes(x = Site, y = fit, color = Treatment), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = Site, ymax = fit + (se.fit), ymin = fit - (se.fit), color = Treatment), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Simulated Noise \nEnvironment", values = two_colors) +
+  scale_y_continuous(limits = c(0, 500), breaks = seq(0, 500, 100)) +
+  ylab("No. Abdomen Bobs During First Copulation") +
+  xlab("Origin") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+```
+
+### Rate of Bobs
+
+```{r bob rate before quiescent}
+# raw
+sum <- mated %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(bob_rate_before_quiescent),
+            se = plotrix::std.error(bob_rate_before_quiescent)) 
+  ggplot() +
+  geom_jitter(aes(x = Site, y = bob_rate_before_quiescent, color = Treatment), width = 0.25, data = mated) +
+  geom_point(aes(x = Site, y = mean, color = Treatment), data = sum) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25, data = sum) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("Bob Rate Before Quiescence (bobs/minute)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test((mated$bob_rate_before_quiescent))
+#model <- lm(bob_rate_before_quiescent ~ Site * Treatment, data = mated)
+model <- rlm(bob_rate_before_quiescent ~ Site * Treatment, data = mated)
+car::Anova(model)
+emmeans(model, pairwise ~ Site)
+emmeans(model, pairwise ~ Treatment | Site)
+
+nd <- data.frame(expand_grid(Site = levels(mated$Site),
+                             Treatment = levels(mated$Treatment)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(Site = fct_relevel(Site, "Rural", "Urban"),
+         Treatment = fct_relevel(Treatment, "Quiet", "Loud"))
+
+ggplot() +
+  geom_jitter(aes(x = Site, y = bob_rate_before_quiescent, color = Treatment), width = 0.25, alpha = 0.5, data = mated) +
+  geom_point(aes(x = Site, y = fit, color = Treatment), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = Site, ymax = fit + (se.fit), ymin = fit - (se.fit), color = Treatment), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Playback Treatment", values = two_colors) +
+  #scale_y_continuous(limits = c(0, 250), breaks = seq(0, 250, 50)) +
+  ylab("Rate of Pre-Quiescent Abdomen Bobs \n(bobs/minute)") +
+  xlab("") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+```
+
+```{r bob ratepre-copulation quiescence}
+# raw
+mated %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(bob_rate_quiescent),
+            se = plotrix::std.error(bob_rate_quiescent)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("Bob Rate Before Copulation (bobs/second)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test(log(mated$bob_rate_quiescent))
+model <- rlm((bob_rate_quiescent) ~ Site * Treatment, data = mated)
+car::Anova(model)
+emmeans(model, pairwise ~ Site)
+emmeans(model, pairwise ~ Treatment | Site)
+
+nd <- data.frame(expand_grid(Site = levels(mated$Site),
+                             Treatment = levels(mated$Treatment)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(Site = fct_relevel(Site, "Rural", "Urban"),
+         Treatment = fct_relevel(Treatment, "Quiet", "Loud"))
+
+ggplot() +
+  geom_jitter(aes(x = Site, y = bob_rate_quiescent, color = Treatment), width = 0.25, alpha = 0.5, data = mated) +
+  geom_point(aes(x = Site, y = (fit), color = Treatment), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = Site, ymax = (fit + (se.fit)), ymin = (fit - (se.fit)), color = Treatment), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Playback Treatment", values = two_colors) +
+  #scale_y_continuous(limits = c(0, 250), breaks = seq(0, 250, 50)) +
+  ylab("Rate of Pre-Copulatory Abdomen Bobs \n(bobs/minute)") +
+  xlab("") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+```
+
+```{r bob rate during copulation}
+# raw
+mated %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(bob_rate_mating1),
+            se = plotrix::std.error(bob_rate_mating1)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("Bob Rate During First Copulation (bobs/second)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+mated2 <- mated %>% 
+  filter(! bob_rate_mating1 == 0)
+shapiro.test(log(mated2$bob_rate_mating1))
+model <- rlm((bob_rate_mating1) ~ Site * Treatment, data = mated)
+#model <- lm((bob_rate_mating1) ~ Site * Treatment, data = mated)
+
+car::Anova(model)
+emmeans(model, pairwise ~ Site | Treatment)
+emmeans(model, pairwise ~ Treatment | Site)
+
+nd <- data.frame(expand_grid(Site = levels(mated$Site),
+                             Treatment = levels(mated$Treatment)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(Site = fct_relevel(Site, "Rural", "Urban"),
+         Treatment = fct_relevel(Treatment, "Quiet", "Loud"))
+
+ggplot() +
+  geom_jitter(aes(x = Site, y = bob_rate_mating1, color = Treatment), width = 0.25, alpha = 0.5, data = mated2) +
+  geom_point(aes(x = Site, y = (fit), color = Treatment), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = Site, ymax = (fit + se.fit), ymin = (fit - se.fit), color = Treatment), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Playback Treatment", values = two_colors) +
+  #scale_y_continuous(limits = c(0, 500), breaks = seq(0, 500, 100)) +
+  ylab("Rate of Abdomen Bobs During First Copulation \n(bobs/minute)") +
+  xlab("") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+```
+
+```{r bob table}
+bobs_table <- read.csv(file = "data/bobs_table.csv", header = TRUE) # for predictor stats table 
+
+bobs_table <- bobs_table %>% 
+  mutate(Predictor = factor(Predictor),
+         Predictor = fct_recode(Predictor, "Origin" = "Rural_Urban",
+                                "Simulated Noise Environment" = "Treatment",
+                               "Origin x Simulated Noise Environment" = "Int"),
+         Phase = factor(Phase),
+         Phase = fct_recode(Phase, "Pre-Quiescence" = "Prequi", "Pre-Copulation" = "Precop", "Copulation" = "Copulation"))
+
+bobs_table <- bobs_table %>% 
+  mutate(Pvalue = factor(Pvalue),
+         Pvalue = fct_recode(Pvalue, "0.086 ." = "0.086",
+                             "0.002 **" = "0.002",
+                             "0.003 **" = "0.003",
+                             "0.077 ." = "0.077",
+                             "0.660" = "0.66",
+                             "0.180" = "0.18",
+                             "0.890" = "0.89",
+                             "0.560" = "0.56",
+                             "0.310" = "0.31",
+                             "0.540" = "0.54",
+                             ))
+
+colnames(bobs_table) <- c('Mating Phase', 'Abdomen Bob Measure','Predictor', 'Test Statistic', 'P-Value')
+
+flextable(bobs_table[ , 1:5]) %>% 
+  autofit() %>% 
+  merge_v(j = c('Mating Phase', 'Abdomen Bob Measure'), part = "body") %>% 
+  bold(bold = TRUE, part = "header") %>% 
+  hline_bottom(part = "body", border = officer::fp_border(width = 2)) %>% 
+  border(j = 'Mating Phase', border.bottom = officer::fp_border(width = 2)) %>% 
+  hline(i = c("3", "9", "15"), j = c("2":"5"), part = "body", border = officer::fp_border(width = 1, color = "grey")) %>%  
+  hline(i = c("6"), part = "body", border = officer::fp_border(width = 2)) %>%  
+  hline(i = c("12"), part = "body", border = officer::fp_border(width = 2)) %>%  
+  fontsize(size = 10, part = "all") %>% 
+  align(align = "center", part = "all") %>% 
+  valign(valign = "top", part = "all") %>% 
+  fix_border_issues() %>% 
+  footnote(i = 1, j = 4, part = "header", ref_symbols = "a", value = as_paragraph("Test statisic negative binomial GLM's (number of abdomen bobs) are χ²-values, while the test statistic from robust LM's (rate of abdomen bobs) are F-values")) #%>% 
+#  save_as_image(path = here::here("figures/bobs_table.png"))
+```
+
+### Phase Timing
+
+```{r latency to quiescence}
+# raw
+mated %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(quiescent_lat_s),
+            se = plotrix::std.error(quiescent_lat_s)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("Latency to Female Quiescence (seconds)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test((mated$quiescent_lat_s))
+model <- glm.nb((quiescent_lat_s) ~ Site * Treatment, data = mated)
+car::Anova(model)
+emmeans(model, pairwise ~ Site | Treatment)
+emmeans(model, pairwise ~ Treatment | Site)
+
+nd <- data.frame(expand_grid(Site = levels(mated$Site),
+                             Treatment = levels(mated$Treatment)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(Site = fct_relevel(Site, "Rural", "Urban"),
+         Treatment = fct_relevel(Treatment, "Quiet", "Loud"))
+
+ggplot() +
+  geom_jitter(aes(x = Site, y = quiescent_lat_s/60, color = Treatment), width = 0.25, alpha = 0.5, data = mated) +
+  geom_line(aes(x = Site, y = fit/60, group = Treatment, color = Treatment), position = position_dodge(width = 0.25), linewidth = 0.5, data = predictions) +
+  geom_point(aes(x = Site, y = fit/60, color = Treatment), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = Site, ymax = (fit + (se.fit))/60, ymin = (fit - (se.fit))/60, color = Treatment), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Simulated Noise \nEnvironment", values = two_colors) +
+  scale_y_continuous(limits = c(0, 110), breaks = seq(0, 105, 15)) +
+  #ylab("Duration of Pre-Quiescence Phase (minutes)") +
+  ylab("Latency to Enter Quiescence (minutes)") +
+  xlab("Origin") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+```
+
+```{r quiescent to copulation}
+# raw
+mated %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(quiescent_mate),
+            se = plotrix::std.error(quiescent_mate)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("Time from Female Quiescence \nto Mating (seconds)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test(mated$quiescent_mate)
+model <- glm.nb(quiescent_mate ~ Site * Treatment, data = mated)
+car::Anova(model)
+emmeans(model, pairwise ~ Site | Treatment)
+emmeans(model, pairwise ~ Treatment | Site)
+emmeans(model, pairwise ~ Site)
+
+
+nd <- data.frame(expand_grid(Site = levels(mated$Site),
+                             Treatment = levels(mated$Treatment)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(Site = fct_relevel(Site, "Rural", "Urban"),
+         Treatment = fct_relevel(Treatment, "Quiet", "Loud"))
+
+ggplot() +
+  geom_jitter(aes(x = Site, y = quiescent_mate, color = Treatment), width = 0.25, alpha = 0.25, data = mated) +
+  geom_line(aes(x = Site, y = fit, group = Treatment, color = Treatment), position = position_dodge(width = 0.25), size = 0.5, data = predictions) +
+  geom_point(aes(x = Site, y = fit, color = Treatment), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = Site, ymax = fit + (se.fit), ymin = fit - (se.fit), color = Treatment), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Simulated Noise \nEnvironment", values = two_colors) +
+  #scale_y_continuous(limits = c(0, 500), breaks = seq(0, 500, 100)) +
+  ylab("Duration of Pre-Copulation Phase (seconds)") +
+  xlab("Origin") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+```
+
+```{r first copulation length}
+# raw
+mated %>% 
+  group_by(Site, Treatment) %>% 
+  summarize(mean = mean(total_mating1),
+            se = plotrix::std.error(total_mating1)) %>% 
+  ggplot() +
+  geom_point(aes(x = Site, y = mean, color = Treatment)) +
+  geom_errorbar(aes(x = Site, ymax = mean + se, ymin = mean - se, color = Treatment), width = 0.25) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  xlab("") +
+  ylab("Total Time of First Copulation (seconds)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+
+shapiro.test(mated$total_mating1)
+model <- glm.nb(total_mating1 ~ Site * Treatment, data = mated)
+car::Anova(model)
+emmeans(model, pairwise ~ Site | Treatment)
+emmeans(model, pairwise ~ Treatment | Site)
+
+nd <- data.frame(expand_grid(Site = levels(mated$Site),
+                             Treatment = levels(mated$Treatment)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(Site = fct_relevel(Site, "Rural", "Urban"),
+         Treatment = fct_relevel(Treatment, "Quiet", "Loud"))
+
+ggplot() +
+  geom_jitter(aes(x = Site, y = total_mating1, color = Treatment), width = 0.25, alpha = 0.25, data = mated) +
+  geom_line(aes(x = Site, y = fit, group = Treatment, color = Treatment), position = position_dodge(width = 0.25), size = 0.5, data = predictions) +
+  geom_point(aes(x = Site, y = fit, color = Treatment), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = Site, ymax = fit + (se.fit), ymin = fit - (se.fit), color = Treatment), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Simulated Noise \nEnvironment", values = two_colors) +
+  #scale_y_continuous(limits = c(0, 500), breaks = seq(0, 500, 100)) +
+  ylab("Duration of First Copulation (seconds)") +
+  xlab("Origin") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+```
+
+```{r mating table}
+mating_table <- read.csv(file = "data/mating_table.csv", header = TRUE) # for predictor stats table 
+
+mating_table <- mating_table %>% 
+  mutate(Predictor = factor(Predictor),
+         Predictor = fct_recode(Predictor, "Origin" = "Rural_Urban",
+                                "Simulated Noise Environment" = "Treatment",
+                               "Origin x Simulated Noise Environment" = "Int"),
+         Stage = factor(Stage),
+         Stage = fct_recode(Stage, "Pre-Quiescence" = "PreQuiescence", "Pre-Copulation" = "PreCopulation", "Copulation" = "Copulation")
+         )
+
+mating_table <- mating_table %>% 
+  mutate(Pvalue = factor(Pvalue),
+         Pvalue = fct_recode(Pvalue, "0.047 *" = "0.047",
+                        "0.001 **" = "0.001"))
+
+colnames(mating_table) <- c('Mating Phase','Predictor', 'χ²', 'P-Value')
+
+flextable(mating_table[ , 1:4]) %>% 
+  autofit() %>% 
+  merge_v(j = c('Mating Phase'), part = "body") %>% 
+  bold(bold = TRUE, part = "header") %>% 
+  hline_bottom(part = "body", border = officer::fp_border(width = 2)) %>% 
+  #border(j = 'Mating Phase', border.bottom = officer::fp_border(width = 2)) %>% 
+  hline(i = c("3", "6"), j = c("1":"4"), part = "body", border = officer::fp_border(width = 1, color = "grey")) %>%  
+  #hline(i = c("6"), part = "body", border = officer::fp_border(width = 2)) %>%  
+  fontsize(size = 10, part = "all") %>% 
+  align(align = "center", part = "all") %>% 
+  valign(valign = "top", part = "all") %>% 
+  fix_border_issues() #%>% 
+  #save_as_image(path = here::here("figures/mating_table.png"))
+```
+
+### Quiescence Interruption and Coninuation
+
+```{r quiescent interupted}
+mated %>% 
+  group_by(Site, Treatment, quiescent_interuption) %>% 
+  count()
+
+shapiro.test((mated$quiescent_interuption))
+model <- glm(quiescent_interuption ~ Site * Treatment, family = binomial, data = mated)
+summary(model)
+car::Anova(model)
+emmeans(model, pairwise ~ Site | Treatment)
+emmeans(model, pairwise ~ Treatment | Site)
+emmeans(model, pairwise ~ Treatment)
+
+nd <- data.frame(expand_grid(Site = levels(mated$Site),
+                             Treatment = levels(mated$Treatment)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(Site = fct_relevel(Site, "Rural", "Urban"),
+         Treatment = fct_relevel(Treatment, "Quiet", "Loud"))
+
+ggplot() +
+  geom_jitter(aes(x = Site, y = quiescent_interuption, color = Treatment), height = 0, width = 0.25, alpha = 0.25, data = mated) +
+  geom_point(aes(x = Site, y = fit, color = Treatment), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = Site, ymax = fit + (se.fit), ymin = fit - (se.fit), color = Treatment), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  #geom_hline(yintercept = 0.5, linetype = "dashed") +
+  scale_color_manual("", values = two_colors) +
+  #scale_y_continuous(limits = c(0, 500), breaks = seq(0, 500, 100)) +
+  ylab("Prop. of Interrupted Quiescence Pre-Copulation") +
+  xlab("") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+```
+
+```{r quiescence continued}
+model <- glm(remains_quiescent ~ Site * Treatment, family = binomial, data = mated)
+car::Anova(model)
+emmeans(model, pairwise ~ Site | Treatment)
+emmeans(model, pairwise ~ Treatment | Site)
+emmeans(model, pairwise ~ Treatment)
+
+nd <- data.frame(expand_grid(Site = levels(mated$Site),
+                             Treatment = levels(mated$Treatment)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(Site = fct_relevel(Site, "Rural", "Urban"),
+         Treatment = fct_relevel(Treatment, "Quiet", "Loud"))
+
+ggplot() +
+  geom_jitter(aes(x = Site, y = remains_quiescent, color = Treatment), height = 0, width = 0.25, alpha = 0.25, data = mated) +
+  geom_point(aes(x = Site, y = fit, color = Treatment), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = Site, ymax = fit + (se.fit), ymin = fit - (se.fit), color = Treatment), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  #geom_hline(yintercept = 0.5, linetype = "dashed") +
+  scale_color_manual("", values = two_colors) +
+  #scale_y_continuous(limits = c(0, 500), breaks = seq(0, 500, 100)) +
+  ylab("Prop. Remained Quiescent Following Copulation") +
+  xlab("") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+```

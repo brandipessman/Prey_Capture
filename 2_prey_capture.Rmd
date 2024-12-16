@@ -1,0 +1,1539 @@
+---
+title: "Prey Capture"
+author: "Brandi Pessman"
+date: "2024-12-10"
+output: html_document
+---
+
+# Load Libraries
+
+```{r libraries}
+library(tidyverse)
+library(lme4)
+library(broom.mixed)
+library(emmeans)
+library(MASS)
+library(ggpubr)
+library(flextable)
+library(mgcv)
+
+two_colors = c("#1b9e77", "#d95f02")
+four_colors = c("#90ecd1", "#1b9e77", "#febd8c", "#d95f02")
+size = 16
+
+assumptions <- function(model, data){
+  require(broom)
+  require(ggpubr)
+  test_close <- augment(model, data = data)
+  resid_close <- ggplot(test_close, aes(x = .fitted, y = .resid)) + 
+    geom_point() + 
+    geom_smooth() +
+    geom_hline(yintercept = 0) +
+    xlab("Fitted Values") +
+    ylab("Standardized \nResiduals") 
+
+  y <- quantile(test_close$.resid, c(0.25, 0.75))
+  x <- qnorm(c(0.25, 0.75))
+  slope <- diff(y)/diff(x)
+  int <- y[1L] - slope * x[1L]
+
+  qq_close <- ggplot(test_close, aes(sample = .resid)) + 
+    stat_qq() + 
+    geom_abline(slope = slope, intercept = int) +
+    xlab("Theoretical Quantiles") +
+    ylab("Sample Quantiles") 
+  return(ggarrange(resid_close, qq_close))
+}
+
+myFunc <- function(mm) {
+    predict(mm, newdata = predictions, re.form = ~0, type = "response")
+}
+```
+
+# Import Data
+
+```{r import}
+playback <- readRDS("wrangled_data/playback.rds")
+prey_main <- readRDS("wrangled_data/prey_main.rds")
+spider_df <- readRDS("wrangled_data/spider_df.rds")
+switch <- readRDS("wrangled_data/switch.rds")
+web <- readRDS("wrangled_data/web.rds")
+
+# First 5 trials, those that did and did not attack
+artificial <- prey_main %>% 
+  filter(stimulus == "Artificial",
+         trial < 6)
+live <- prey_main %>% 
+  filter(stimulus == "Live",
+         trial < 6)
+
+# First 5 trials, only those that attacked
+artificial_attacked <- artificial %>% 
+  filter(attack == 1) %>% 
+  mutate(log_time_ms = log(attack_time_ms)) 
+live_attacked <- live %>% 
+  filter(attack == 1) %>% 
+  mutate(log_time_ms = log(attack_time_ms)) 
+
+# includes 6th switch trial, those that did and did not attack
+artificial6 <- prey_main %>% 
+  filter(stimulus == "Artificial",
+         trial < 7)
+live6 <- prey_main %>% 
+  filter(stimulus == "Live",
+         trial < 7)
+
+# includes 6th switch trial, only those that attacked
+artificial6_attacked <- artificial6 %>% 
+  filter(attack == 1) %>% 
+  mutate(log_time_ms = log(attack_time_ms)) 
+live6_attacked <- live6 %>% 
+  filter(attack == 1) %>% 
+  mutate(log_time_ms = log(attack_time_ms)) 
+```
+
+# Container Levels
+
+```{r container_levels}
+playback %>% 
+  filter(Low_Freq > 300) %>% 
+  group_by(Treatment) %>% 
+  summarize(mean = mean(Power),
+            se = plotrix::std.error(Power))
+
+gam_model <- gam(Power ~  Treatment + s(Low_Freq, by = Treatment, k = 24), data = playback) #better
+gam_model2 <- gam(Power ~  s(Low_Freq, k = 24), data = playback)
+anova(gam_model2, gam_model, test = "Chisq")
+c(AIC(gam_model), AIC(gam_model2))
+sum1 <- summary(gam_model)
+sum2 <- summary(gam_model2)
+sum1
+sum2
+sum1$pTerms.table
+gam.check(gam_model)
+
+nd <- data.frame(expand.grid(Low_Freq = seq(0, 1000, 5),
+                             Treatment = levels(factor(playback$Treatment))))
+predictions <- data.frame(predict(gam_model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(Treatment = fct_relevel(Treatment, "Quiet", "Loud"))
+
+ggplot() +
+    geom_hline(yintercept = 0, color = "black", linetype = "dashed") +
+  geom_line(aes(x = Low_Freq, y = Power, color = Treatment, group = Tub_Cont), alpha = 0.5, data = playback) +
+  geom_line(aes(x = Low_Freq, y = fit, color = Treatment), data = predictions) +
+  geom_ribbon(aes(x = Low_Freq, ymin = fit - (1.96 * se.fit), ymax = fit + (1.96 * se.fit), fill = Treatment), alpha = 0.5, data = predictions) +
+  geom_vline(xintercept = 300, color = "black", linetype = "dashed") +
+  ylab("Relative Amplitude \n(Inband Power, dB re silence)") +
+  xlab("Frequency (Hz)") +
+  scale_fill_manual("", values = c("#1b9e77", "#d95f02")) +
+  scale_color_manual("", values = c("#1b9e77", "#d95f02")) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans"))
+```
+
+# Timing of Collection and Maturation
+
+```{r timing prep}
+spider_df_collected <- spider_df %>% 
+  group_by(site, date_collected) %>% 
+  count() %>% 
+  ungroup() %>% 
+  mutate(date = date_collected,
+         event = "Collection",
+         site = factor(site)) %>% 
+  dplyr::select(-date_collected) %>% 
+  unite("site_event", site, event, sep = "_", remove = FALSE)
+
+spider_df_matured <- spider_df %>% 
+  group_by(site, lastmolt) %>% 
+  count() %>% 
+  ungroup() %>% 
+  mutate(date = lastmolt,
+         event = "Maturation",
+         site = factor(site)) %>% 
+  dplyr::select(-lastmolt) %>% 
+  unite("site_event", site, event, sep = "_", remove = FALSE)
+
+prey_date <- rbind(spider_df_collected, spider_df_matured) %>% 
+  mutate(event = factor(event),
+         site_event = factor(site_event),
+         site_event = fct_relevel(site_event, "Rural_Collection", "Urban_Collection", "Rural_Maturation", "Urban_Maturation"),
+         site = fct_relevel(site, "Rural", "Urban"),
+         event = fct_relevel(event, "Collection", "Maturation"))
+```
+
+```{r timing graph}
+ggplot() +
+  annotate(geom = "rect", ymin = 0, ymax = 14, xmin = as.Date("2021-06-23"), xmax = as.Date("2021-07-24"), fill = "grey90") +
+  annotate(geom = "rect", ymin = 0, ymax = 14, xmin = as.Date("2021-07-24"), xmax = as.Date("2021-09-05"), fill = "grey80") +
+  annotate(geom = "rect", ymin = 0, ymax = 14, xmin = as.Date("2021-09-05"), xmax = as.Date("2021-09-26"), fill = "grey70") +
+  geom_vline(xintercept = as.Date("2021-07-24"), color = "black", linetype = "dashed") +
+  geom_vline(xintercept = as.Date("2021-09-05"), color = "black", linetype = "dashed") +
+  annotate(geom = "text", y = 13, x = as.Date("2021-07-08"), label = "Collection", size = 5) +
+  annotate(geom = "text", y = 13, x = as.Date("2021-08-14"), label = "Maturation", size = 5) +
+  annotate(geom = "text", y = 13, x = as.Date("2021-09-16"), label = "Playback", size = 5) +
+  geom_area(aes(x = date, y = n, group = site_event, fill = site_event, color = site_event, linetype = site_event), alpha = 0.5, stat = "identity", position = "identity", data = prey_date) +
+  ylab("Number of Spiders") +
+  xlab("") +
+  scale_x_date(limits = c(as.Date("2021-06-23"), as.Date("2021-09-28")), breaks = c(as.Date("2021-06-23"), as.Date("2021-07-24"), as.Date("2021-09-05"), as.Date("2021-09-26")), date_labels = "%b %d") +
+  scale_y_continuous(limits = c(0, 14), breaks = seq(0,12,2)) +
+  scale_fill_manual("", values = c("#1b9e77", "#d95f02", "#1b9e77", "#d95f02")) +
+  scale_color_manual("", values = c("#1b9e77", "#d95f02", "#1b9e77", "#d95f02")) +
+  scale_linetype_manual("", values = c("dashed", "dashed", "solid", "solid")) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans")) +
+  guides(fill = guide_legend(nrow = 2),
+         color = guide_legend(nrow = 2),
+         linetype = guide_legend(nrow = 2))
+# 600 x 350
+```
+
+# Preliminary Analysis of **Both Webs**
+
+```{r prelim proportion attacked}
+stim = "Artificial"
+stim = "Live"
+total <- prey_main %>% 
+  filter(web_treatment == "web1_t1" | web_treatment == "web2_t2",
+         stimulus == stim) %>% 
+  group_by(site, t1_t2, trial) %>% 
+  count() %>% 
+  mutate(total = n) %>% 
+  dplyr::select(-n)
+  
+attacked <- prey_main %>% 
+  filter(web_treatment == "web1_t1" | web_treatment == "web2_t2",
+         attack == 1,
+         stimulus == stim) %>% 
+  group_by(site, t1_t2, trial) %>% 
+  count() %>% 
+  mutate(attacked = n) %>% 
+  dplyr::select(-n)
+
+prop <- full_join(attacked, total, by = c("site", "t1_t2", "trial")) %>% 
+  mutate(prop = attacked/total) %>% 
+  ungroup()
+
+prop %>% 
+  ggplot() +
+  geom_bar(aes(x = trial, y = prop, fill = t1_t2), stat="identity") +
+  scale_fill_manual(values = four_colors) +
+  xlab("Trial") +
+  ylab("Proportion of Spiders that Attacked") +
+  scale_y_continuous(limits = c(0,1)) +
+  scale_x_continuous(limits = c(0,12), breaks = c(2, 4, 6, 8, 10, 12)) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_grid(site~t1_t2)
+# 650 x 350
+```
+
+```{r prelim prey capture}
+stim = "Artificial"
+stim = "Live"
+
+attacked_all <- prey_main %>% 
+  filter(attack == 1, # only those that attacked
+         stimulus == stim,
+         web_treatment == "web1_t1" | web_treatment == "web2_t2") %>% 
+    mutate(log_time = log(attack_time)) 
+
+attacked_mean <- attacked_all %>% 
+  group_by(site, t1_t2, treatment, trial) %>% 
+  summarize(mean = mean(attack_time),
+            se = plotrix::std.error(attack_time),
+            log_mean = mean(log_time),
+            log_se = plotrix::std.error(log_time)) %>% 
+  mutate(t1_t2 = fct_relevel(t1_t2, "Quiet_Loud", "Quiet_Quiet", "Loud_Quiet", "Loud_Loud"))
+
+#log
+ggplot() +
+  geom_line(aes(x = trial, y = log_mean, color = treatment), linewidth = 1, data = attacked_mean) +
+  geom_ribbon(aes(x = trial, ymax = log_mean + log_se, ymin = log_mean - log_se, fill = treatment), alpha = 0.5, data = attacked_mean) +
+  #geom_smooth(aes(x = trial, y = attack_time, group = spider, color = site_treatment1), method = lm, se = FALSE, linewidth = 0.5, alpha = 0.5, data = attacked1) +
+  geom_line(aes(x = trial, y = log_time, group = spider, color = treatment), linewidth = 0.25, alpha = 0.5, data = attacked_all) +
+  scale_x_continuous(limits = c(0, 12), breaks = c(2, 4, 6, 8, 10, 12)) +
+  ylab("Ln Time to Attack (seconds)") +
+  xlab("Trial") +
+  scale_fill_manual(values = c("#1b9e77", "#1b9e77", "#d95f02", "#d95f02")) +
+  scale_color_manual(values = c("#1b9e77", "#1b9e77", "#d95f02", "#d95f02")) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_grid(site~t1_t2)
+  # 650 x 450
+```
+
+```{r prelim random effects}
+# juvenile days in lab
+spider_df %>% 
+  group_by(site, t1_t2) %>% 
+  summarize(mean = mean(lab2mature),
+            se = plotrix::std.error(lab2mature)) %>% 
+  ggplot() +
+  geom_point(aes(x = t1_t2, y = mean, color = t1_t2)) +
+  geom_errorbar(aes(x = t1_t2, ymax = mean + se, ymin = mean - se, color = t1_t2)) +
+  scale_color_manual("Treatment", values = four_colors) +
+  scale_y_continuous(limits = c(0, 60)) +
+  ylab("Juvenile Days in the Lab") +
+  xlab("") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+# 450 x 350
+
+# days in spider room
+spider_df %>% 
+  group_by(site, t1_t2) %>% 
+  summarize(mean = mean(lab2silence),
+            se = plotrix::std.error(lab2silence))  %>% 
+  ggplot() +
+  geom_point(aes(x = t1_t2, y = mean, color = t1_t2)) +
+  geom_errorbar(aes(x = t1_t2, ymax = mean + se, ymin = mean - se, color = t1_t2)) +
+  scale_color_manual("Treatment", values = four_colors) +
+  scale_y_continuous(limits = c(0, 27)) +
+  ylab("Days in the Spider Room") +
+  xlab("") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+
+# age
+spider_df %>% 
+  group_by(site, t1_t2) %>% 
+  summarize(mean = mean(age),
+            se = plotrix::std.error(age)) %>% 
+  ggplot() +
+  geom_point(aes(x = t1_t2, y = mean, color = t1_t2)) +
+  geom_errorbar(aes(x = t1_t2, ymax = mean + se, ymin = mean - se, color = t1_t2)) +
+  scale_color_manual("Treatment", values = four_colors) +
+  scale_y_continuous(limits = c(0, 17)) +
+  ylab("Age at Experiment (Days Mature)") +
+  xlab("") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+
+# condition
+spider_df %>% 
+  group_by(site, t1_t2) %>% 
+  summarize(mean = mean(condition),
+            se = plotrix::std.error(condition)) %>% 
+  ggplot() +
+  geom_point(aes(x = t1_t2, y = mean, color = t1_t2)) +
+  geom_errorbar(aes(x = t1_t2, ymax = mean + se, ymin = mean - se, color = t1_t2)) +
+  scale_color_manual("Treatment", values = four_colors) +
+  scale_y_continuous(limits = c(-0.15, 0.15)) +
+  ylab("Body Condition") +
+  xlab("") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+```
+
+# First Web Descriptives
+
+## Proportion that Attacked
+
+```{r prop raw data artificial}
+prey_main %>% filter(trial < 7) %>% group_by(stimulus, attack) %>% count()
+
+total <- artificial6 %>% 
+  group_by(site, treatment1, site_t1, web_treatment, trial) %>% 
+  count() %>% 
+  mutate(total = n) %>% 
+  dplyr::select(-n)
+  
+attacked <- artificial6_attacked %>% 
+  group_by(site, treatment1, site_t1, web_treatment, trial) %>% 
+  count() %>% 
+  mutate(attacked = n) %>% 
+  dplyr::select(-n)
+
+prop <- full_join(attacked, total, by = c("site", "treatment1", "site_t1", "web_treatment", "trial")) %>% 
+  mutate(prop = attacked/total)
+
+# raw data
+prop %>% 
+  ggplot() +
+  geom_bar(aes(x = trial, y = prop, fill = treatment1, linetype = web_treatment), color = "black", stat="identity") +
+  scale_fill_manual(values = two_colors) +
+  xlab("Trial") +
+  ylab("Proportion of Spiders that Attacked") +
+  scale_y_continuous(limits = c(0,1)) +
+  scale_x_continuous(limits = c(0,7), breaks = c(1, 2, 3, 4, 5, 6)) +
+  scale_linetype_manual(values = c("blank", "dashed")) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_grid(site~treatment1)
+# 450 x 450
+```
+
+```{r prop raw data live}
+total <- live6 %>% 
+  group_by(site, treatment1, site_t1, trial) %>% 
+  count() %>% 
+  mutate(total = n) %>% 
+  dplyr::select(-n)
+  
+attacked <- live6_attacked %>% 
+  group_by(site, treatment1, site_t1, trial) %>% 
+  count() %>% 
+  mutate(attacked = n) %>% 
+  dplyr::select(-n)
+
+prop <- full_join(attacked, total, by = c("site", "treatment1", "site_t1", "trial")) %>% 
+  mutate(prop = attacked/total)
+
+# raw data
+prop %>% 
+  ggplot() +
+  geom_bar(aes(x = trial, y = prop, fill = treatment1, linetype = web_treatment), color = "black", stat="identity") +
+  scale_fill_manual(values = two_colors) +
+  xlab("Trial") +
+  ylab("Proportion of Spiders that Attacked") +
+  scale_y_continuous(limits = c(0,1)) +
+  scale_x_continuous(limits = c(0,7), breaks = c(1, 2, 3, 4, 5, 6)) +
+  scale_linetype_manual(values = c("blank", "dashed")) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_grid(site~treatment1)
+# 450 x 450
+```
+
+```{r prop artificial stats}
+#model <- glmer(attack ~ site_t1 * trial + (1|spider), family = binomial, data = artificial6, control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=100000)))
+model <- glm(attack ~ trial * site_t1, family = binomial, data = artificial6)
+car::Anova(model)
+assumptions(model, artificial6)
+
+
+nd <- data.frame(expand.grid(trial = seq(1, 6, 1),
+                      site_t1 = levels(factor(artificial6$site_t1))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  separate(site_t1, c("site", "treatment1"), sep = "_", remove = FALSE) %>% 
+  mutate(treatment1 = fct_relevel(treatment1, "Quiet", "Loud"), 
+         site = fct_relevel(site, "Rural", "Urban"))
+
+ggplot() +
+  geom_point(aes(x = trial, y = attack, color = treatment1, group = site_t1), alpha = 0.5, data = artificial6) +
+  geom_line(aes(x = trial, y = fit, color = treatment1), data = predictions) +
+  geom_ribbon(aes(x = trial, ymin = fit - (1.96 * se.fit), ymax = fit + (1.96 * se.fit), fill = treatment1), alpha = 0.5, data = predictions) +
+  ylab("Proportion of Spiders that Attacked") +
+  xlab("Trial") +
+  scale_fill_manual("", values = c("#1b9e77", "#d95f02")) +
+  scale_color_manual("", values = c("#1b9e77", "#d95f02")) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+```
+
+```{r prop live stats}
+#model <- glmer(attack ~ trial * site_t1 + (1|spider), family = binomial, data = live6, control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=100000)))
+model <- glm(attack ~ site_t1 * trial, family = binomial, data = live6)
+car::Anova(model)
+assumptions(model, live6)
+emtrends(model, ~ site_t1, var = "trial")
+
+nd <- data.frame(expand.grid(trial = seq(1, 6, 1),
+                      site_t1 = levels(factor(live6$site_t1))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  separate(site_t1, c("site", "treatment1"), sep = "_", remove = FALSE) %>% 
+  mutate(treatment1 = fct_relevel(treatment1, "Quiet", "Loud"), 
+         site = fct_relevel(site, "Rural", "Urban"))
+
+#predictions <- expand.grid(site_t1 = levels(factor(live6$site_t1)),
+#                           trial = seq(1,5,1))
+#predictions$response <- predict(model, newdata = predictions, se.fit = TRUE, re.form = NA, type = "response")
+
+#bigBoot_live_trial <- bootMer(model, myFunc, nsim = 1000)
+#saveRDS(bigBoot_live_trial, file = "bootstrapping/bigBoot_live_trial.Rds")
+#bigBoot_live_trial <- readRDS("bootstrapping/bigBoot_live_trial.Rds")
+#predSE <- t(apply(bigBoot_live_trial$t, MARGIN = 2, FUN = sd))
+#predictions$SE <- predSE[1, ]
+
+ggplot() +
+  geom_point(aes(x = trial, y = attack, color = treatment1, group = site_t1), alpha = 0.5, data = live6) +
+  geom_line(aes(x = trial, y = fit, color = treatment1), data = predictions) +
+  geom_ribbon(aes(x = trial, ymin = fit - (1.96 * se.fit), ymax = fit + (1.96 * se.fit), fill = treatment1), alpha = 0.5, data = predictions) +
+  ylab("Proportion of Spiders that Attacked") +
+  xlab("Trial") +
+  scale_fill_manual("", values = c("#1b9e77", "#d95f02")) +
+  scale_color_manual("", values = c("#1b9e77", "#d95f02")) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+```
+
+The proportion of spiders that attacked the toothbrush is not affected by trial, but there is a trend that the proportion of spiders that attacked a cricket decreased with trial. 
+
+## Random Effects
+
+```{r trial raw data artificial}
+attacked_mean <- artificial_attacked %>% 
+  group_by(site, treatment1, trial) %>% 
+  summarize(log_mean = mean(log_time_ms),
+            log_se = plotrix::std.error(log_time_ms)) 
+# raw data
+ggplot() +
+  geom_line(aes(x = trial, y = log_mean, color = treatment1), linewidth = 1, data = attacked_mean) +
+  geom_ribbon(aes(x = trial, ymax = log_mean + log_se, ymin = log_mean - log_se, fill = treatment1), alpha = 0.5, data = attacked_mean) +
+  geom_line(aes(x = trial, y = log_time_ms, group = spider, color = treatment1), linewidth = 0.25, alpha = 0.5, data = artificial_attacked) +
+  scale_x_continuous(limits = c(0, 6), breaks = c(1, 2, 3, 4, 5)) +
+  ylab("Ln Time to Attack Artificial Prey (seconds)") +
+  xlab("Trial") +
+  scale_fill_manual(values = c("#1b9e77", "#d95f02")) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_grid(site~treatment1)
+  # 650 x 450
+```
+
+```{r trial raw data live}
+attacked_mean <- live_attacked %>% 
+  group_by(site, treatment1, trial) %>% 
+  summarize(log_mean = mean(log_time_ms),
+            log_se = plotrix::std.error(log_time_ms)) 
+# raw data
+ggplot() +
+  geom_line(aes(x = trial, y = log_mean, color = treatment1), linewidth = 1, data = attacked_mean) +
+  geom_ribbon(aes(x = trial, ymax = log_mean + log_se, ymin = log_mean - log_se, fill = treatment1), alpha = 0.5, data = attacked_mean) +
+  geom_line(aes(x = trial, y = log_time_ms, group = spider, color = treatment1), linewidth = 0.25, alpha = 0.5, data = live_attacked) +
+  scale_x_continuous(limits = c(0, 7), breaks = c(1, 2, 3, 4, 5, 6)) +
+  ylab("Ln Time to Attack Live Prey (seconds)") +
+  xlab("Trial") +
+  scale_fill_manual(values = c("#1b9e77", "#d95f02")) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02")) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_grid(site~treatment1)
+  # 650 x 450
+```
+
+```{r trial stats artificial}
+shapiro.test(artificial_attacked$log_time_ms) # not normal
+model <- glm.nb(attack_time_ms ~ trial * site_t1, data = artificial_attacked)
+car::Anova(model)
+emmeans(model, pairwise ~ site_t1 * trial)
+contrast(emtrends(model, ~ site_t1, var = "trial"))
+pairs(emtrends(model, ~ site_t1, var = "trial"))
+
+nd <- data.frame(expand.grid(trial = seq(1, 5, 1),
+                             site_t1 = levels(factor(artificial_attacked$site_t1))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  separate(site_t1, into = c("site", "treatment1"), sep = "_", remove = FALSE) %>% 
+  mutate(treatment1 = fct_relevel(treatment1, "Quiet", "Loud"), 
+         site = fct_relevel(site, "Rural", "Urban"))
+
+ggplot() +
+  geom_point(aes(x = trial, y = attack_time_ms, color = treatment1, group = site_t1), alpha = 0.5, data = artificial_attacked) +
+  geom_line(aes(x = trial, y = fit, color = treatment1), data = predictions) +
+  geom_ribbon(aes(x = trial, ymin = fit - (1.96 * se.fit), ymax = fit + (1.96 * se.fit), fill = treatment1), alpha = 0.5, data = predictions) +
+  ylab("Time to Attack Artificial Prey (ms)") +
+  xlab("Trial") +
+  scale_fill_manual("", values = c("#1b9e77", "#d95f02")) +
+  scale_color_manual("", values = c("#1b9e77", "#d95f02")) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+
+#model <- gam(log_time_ms ~ s(trial, by = site_t1, k = 3), data = artificial_attacked)
+#sum(residuals(model, type = "pearson")^2) / df.residual(model)
+#summary(model)
+
+# no differences
+#uq <- artificial_attacked %>% 
+#  filter(site == "Urban",
+#         treatment1 == "Quiet")
+#kruskal.test(attack_time ~ trial, data = uq)
+#rq <- artificial_attacked %>% 
+#  filter(site == "Rural",
+#         treatment1 == "Quiet")
+#kruskal.test(attack_time ~ trial, data = rq)
+#ul <- artificial_attacked %>% 
+#  filter(site == "Urban",
+#         treatment1 == "Loud")
+#kruskal.test(attack_time ~ trial, data = ul)
+#rl <- artificial_attacked %>% 
+#  filter(site == "Rural",
+#         treatment1 == "Loud")
+#kruskal.test(attack_time ~ trial, data = rl)
+```
+
+```{r trial stats live}
+shapiro.test(live_attacked$log_time_ms) # not normal
+model <- glm.nb(attack_time_ms ~ trial * site_t1, data = live_attacked)
+car::Anova(model)
+emmeans(model, pairwise ~ site_t1 * trial)
+contrast(emtrends(model, ~ site_t1, var = "trial"))
+pairs(emtrends(model, ~ site_t1, var = "trial"))
+
+nd <- data.frame(expand.grid(trial = seq(1, 5, 1),
+                             site_t1 = levels(factor(live_attacked$site_t1))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  separate(site_t1, into = c("site", "treatment1"), sep = "_", remove = FALSE) %>% 
+  mutate(treatment1 = fct_relevel(treatment1, "Quiet", "Loud"), 
+         site = fct_relevel(site, "Rural", "Urban"))
+
+ggplot() +
+  geom_point(aes(x = trial, y = attack_time_ms, color = treatment1, group = site_t1), alpha = 0.5, data = live_attacked) +
+  geom_line(aes(x = trial, y = fit, color = treatment1), data = predictions) +
+  geom_ribbon(aes(x = trial, ymin = fit - (1.96 * se.fit), ymax = fit + (1.96 * se.fit), fill = treatment1), alpha = 0.5, data = predictions) +
+  ylab("Time to Attack Prey (ms)") +
+  xlab("Trial") +
+  scale_fill_manual("", values = c("#1b9e77", "#d95f02")) +
+  scale_color_manual("", values = c("#1b9e77", "#d95f02")) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top",
+        strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+
+#model <- gam(log_time_ms ~ s(trial, by = site_t1, k = 3), data = live_attacked)
+#sum(residuals(model, type = "pearson")^2) / df.residual(model)
+#summary(model)
+
+# trends for uq and rl
+#uq <- live_attacked %>% 
+#  filter(site == "Urban",
+#         treatment1 == "Quiet")
+#kruskal.test(attack_time ~ trial, data = uq)
+#rq <- live_attacked %>% 
+#  filter(site == "Rural",
+#         treatment1 == "Quiet")
+#kruskal.test(attack_time ~ trial, data = rq)
+#ul <- live_attacked %>% 
+#  filter(site == "Urban",
+#         treatment1 == "Loud")
+#kruskal.test(attack_time ~ trial, data = ul)
+#rl <- live_attacked %>% 
+#  filter(site == "Rural",
+#         treatment1 == "Loud")
+#kruskal.test(attack_time ~ trial, data = rl)
+```
+
+There is no trend across trial for any group that attacked the toothbrush. There is a trend for cricket attacked by rural_loud and urban_quiet.
+
+```{r juvenile days in lab}
+juvenile_days <- spider_df %>% 
+  group_by(site_t1, site, treatment1) %>% 
+  summarize(mean = mean(lab2mature),
+            se = plotrix::std.error(lab2mature)) 
+
+ggplot() +
+  geom_point(aes(x = treatment1, y = mean, color = treatment1), size = 2.5, data = juvenile_days) +
+  geom_errorbar(aes(x = treatment1, ymax = mean + se, ymin = mean - se, color = treatment1), linewidth = 1.5, width = 0.25, data = juvenile_days) +
+  geom_jitter(aes(x = treatment1, y = lab2mature, color = treatment1), width = 0.25, alpha = 0.5, data = spider_df) +
+  scale_color_manual("Treatment", values = two_colors) +
+  scale_y_continuous(limits = c(0, 70)) +
+  ylab("Juvenile Days in the Lab") +
+  xlab("Treatment") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+
+shapiro.test(spider_df$lab2mature) # normal
+model <- lm(lab2mature ~ site * treatment1, data = spider_df)
+car::Anova(model)
+
+nd <- data.frame(expand.grid(site = levels(factor(spider_df$site)),
+                             treatment1 = levels(factor(spider_df$treatment1))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions)
+
+ggplot() +
+    geom_jitter(aes(x = treatment1, y = lab2mature, color = treatment1), width = 0.25, alpha = 0.5, data = spider_df) +
+  geom_point(aes(x = treatment1, y = fit, color = treatment1), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = treatment1, ymax = fit + (1.96 * se.fit), ymin = fit - (1.96 * se.fit), color = treatment1), linewidth = 1.5, width = 0.25, data = predictions) +
+  scale_color_manual("Treatment", values = two_colors) +
+  scale_y_continuous(limits = c(0, 70)) +
+  ylab("Juvenile Days in the Lab") +
+  xlab("Treatment") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+# 450 x 350
+```
+
+```{r days in spider room}
+# days in spider room
+spider_room <- spider_df %>% 
+  group_by(site_t1, site, treatment1) %>% 
+  summarize(mean = mean(lab2silence),
+            se = plotrix::std.error(lab2silence)) 
+
+ggplot() +
+  geom_point(aes(x = treatment1, y = mean, color = treatment1), size = 2.5, data = spider_room) +
+  geom_errorbar(aes(x = treatment1, ymax = mean + se, ymin = mean - se, color = treatment1), linewidth = 1.5, width = 0.25, data = spider_room) +
+  geom_jitter(aes(x = treatment1, y = lab2silence, color = treatment1), width = 0.25, alpha = 0.5, data = spider_df) +
+  scale_color_manual("Treatment", values = two_colors) +
+  scale_y_continuous(limits = c(0, 35)) +
+  ylab("Days in the Spider Room") +
+  xlab("Treatment") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+
+shapiro.test(spider_df$lab2silence) # not normal
+model <- lm(lab2silence ~ site * treatment1, data = spider_df)
+car::Anova(model)
+
+nd <- data.frame(expand.grid(site = levels(factor(spider_df$site)),
+                             treatment1 = levels(factor(spider_df$treatment1))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) 
+
+ggplot() +
+    geom_jitter(aes(x = treatment1, y = lab2silence, color = treatment1), width = 0.25, alpha = 0.5, data = spider_df) +
+  geom_point(aes(x = treatment1, y = fit, color = treatment1), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = treatment1, ymax = fit + (1.96 * se.fit), ymin = fit - (1.96 * se.fit), color = treatment1), linewidth = 1.5, width = 0.25, data = predictions) +
+  scale_color_manual("Treatment", values = two_colors) +
+  scale_y_continuous(limits = c(0, 70)) +
+  ylab("Days in the Spider Room") +
+  xlab("Treatment") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+```
+
+```{r age}
+# age
+age <- spider_df %>% 
+  group_by(site_t1, site, treatment1) %>% 
+  summarize(mean = mean(age),
+            se = plotrix::std.error(age)) 
+
+ggplot() +
+  geom_point(aes(x = treatment1, y = mean, color = treatment1), size = 2.5, data = age) +
+  geom_errorbar(aes(x = treatment1, ymax = mean + se, ymin = mean - se, color = treatment1), linewidth = 1.5, width = 0.25, data = age) +
+  geom_jitter(aes(x = treatment1, y = age, color = treatment1), width = 0.25, alpha = 0.5, data = spider_df) +
+  scale_color_manual("Treatment", values = two_colors) +
+  scale_y_continuous(limits = c(-3, 35)) +
+  ylab("Age at Playback (Days since Mature)") +
+  xlab("Treatment") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+
+shapiro.test(spider_df$age) # not normal
+model <- lm(age ~ site * treatment1, data = spider_df)
+car::Anova(model)
+
+nd <- data.frame(expand.grid(site = levels(factor(spider_df$site)),
+                             treatment1 = levels(factor(spider_df$treatment1))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions)
+
+ggplot() +
+    geom_jitter(aes(x = treatment1, y = age, color = treatment1), width = 0.25, alpha = 0.5, data = spider_df) +
+  geom_point(aes(x = treatment1, y = fit, color = treatment1), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = treatment1, ymax = fit + (1.96 * se.fit), ymin = fit - (1.96 * se.fit), color = treatment1), linewidth = 1.5, width = 0.25, data = predictions) +
+  scale_color_manual("Treatment", values = two_colors) +
+  scale_y_continuous(limits = c(-4, 40)) +
+  ylab("Age at Playback (Days since Mature)") +
+  xlab("Treatment") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+```
+
+```{r condition}
+# condition
+condition <- spider_df %>% 
+  group_by(site_t1, site, treatment1) %>% 
+  summarize(mean = mean(condition),
+            se = plotrix::std.error(condition)) 
+
+ggplot() +
+  geom_point(aes(x = treatment1, y = mean, color = treatment1), size = 2.5, data = condition) +
+  geom_errorbar(aes(x = treatment1, ymax = mean + se, ymin = mean - se, color = treatment1), linewidth = 1.5, width = 0.25, data = condition) +
+  geom_jitter(aes(x = treatment1, y = condition, color = treatment1), width = 0.25, alpha = 0.5, data = spider_df) +
+  scale_color_manual("Treatment", values = two_colors) +
+  scale_y_continuous(limits = c(-0.5, 0.5)) +
+  ylab("Body Condition \n(LM Residuals of ln(mass) and ln(ceph width))") +
+  xlab("Treatment") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+
+shapiro.test(spider_df$condition) # normal
+model <- lm(condition ~ site * treatment1, data = spider_df)
+car::Anova(model)
+
+nd <- data.frame(expand.grid(site = levels(factor(spider_df$site)),
+                             treatment1 = levels(factor(spider_df$treatment1))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) 
+
+ggplot() +
+    geom_jitter(aes(x = treatment1, y = condition, color = treatment1), width = 0.25, alpha = 0.5, data = spider_df) +
+  geom_point(aes(x = treatment1, y = fit, color = treatment1), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = treatment1, ymax = fit + (1.96 * se.fit), ymin = fit - (1.96 * se.fit), color = treatment1), linewidth = 1.5, width = 0.25, data = predictions) +
+  scale_color_manual("Treatment", values = two_colors) +
+  scale_y_continuous(limits = c(-0.5, 0.5)) +
+  ylab("Body Condition \n(LM Residuals of ln(mass) and ln(ceph width))") +
+  xlab("Treatment") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~site)
+```
+
+Days spent in the spider room and days as juveniles in the lab were higher for urban than rural. No differences in age at playback. Trend for difference in condition between sites (urban in better condition).
+
+## Attack Time in the Field
+
+```{r field attack time}
+#shapiro.test(spider_df$field_attack_time_ms) # not normal
+#model <- glm(field_attack ~ site, family = binomial, data = spider_df)
+#car::Anova(model)
+
+spider_df %>% 
+  group_by(site, field_attack) %>% 
+  count()
+
+# those that attacked
+spider_df_attacked <- spider_df %>% 
+  filter(field_attack == 1)
+
+shapiro.test(spider_df_attacked$field_attack_time_ms) # not normal
+model <- glm.nb(field_attack_time_ms ~ site, data = spider_df_attacked)
+car::Anova(model)
+
+nd <- data.frame(expand.grid(site = levels(factor(spider_df_attacked$site))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) 
+
+ggplot() +
+    geom_jitter(aes(x = site, y = field_attack_time_ms, color = site), width = 0.25, alpha = 0.25, data = spider_df_attacked) +
+  geom_point(aes(x = site, y = fit, color = site), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = site, ymax = fit + (se.fit), ymin = fit - (se.fit), color = site), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Origin", values = c("black", "black")) +
+  scale_y_continuous(limits = c(0, 20000)) +
+  ylab("Time to Attack Toothbrush in Field (ms)") +
+  xlab("Origin") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "none") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+```
+
+# Time to Attack on First Web
+
+```{r prey capture artificial}
+artificial_sum <- artificial_attacked %>% 
+  group_by(spider, site_t1, site, treatment1) %>% 
+  summarize(mean_attack = round(mean(attack_time_ms)))
+
+# same results with lab2mature
+model <- glm.nb(mean_attack ~ site * treatment1, data = artificial_sum)
+car::Anova(model)
+emmeans(model, pairwise ~ treatment1 | site)
+
+artificial_sum_u <- artificial_sum %>% 
+  filter(site == "Urban")
+artificial_sum_r <- artificial_sum %>% 
+  filter(site == "Rural")
+kruskal.test(mean_attack ~ site, data = artificial_sum)
+kruskal.test(mean_attack ~ treatment1, data = artificial_sum_u)
+kruskal.test(mean_attack ~ treatment1, data = artificial_sum_r)
+
+nd <- data.frame(expand.grid(site = levels(factor(artificial_sum$site)),
+                             treatment1 = levels(factor(artificial_sum$treatment1))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions)
+
+artificial_graph <- ggplot() +
+  geom_jitter(aes(x = site, y = mean_attack, color = treatment1), width = 0.25, alpha = 0.25, data = artificial_sum) +
+  geom_point(aes(x = site, y = fit, color = treatment1), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = site, ymax = fit + (se.fit), ymin = fit - (se.fit), color = treatment1), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Simulated \nNoise \nEnvironment", values = two_colors) +
+  scale_y_continuous(limits = c(0, 17000)) +
+  ylab("Time to Attack Toothbrush in the Lab (ms)") +
+  xlab("Origin") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "right") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) 
+#350 x 425
+```
+
+```{r prey capture live}
+live_sum <- live_attacked %>% 
+  group_by(spider, site_t1, site, treatment1) %>% 
+  summarize(mean_attack = round(mean(attack_time_ms)))
+
+shapiro.test(live_sum$mean_attack) #not normal
+ggplot() +
+  geom_density(aes(x = mean_attack), data = live_sum)
+
+# same results with lab2mature
+model <- glm.nb(mean_attack ~ site * treatment1, data = live_sum)
+car::Anova(model)
+emmeans(model, pairwise ~ treatment1 | site)
+
+nd <- data.frame(expand.grid(site = levels(factor(live_sum$site)),
+                             treatment1 = levels(factor(live_sum$treatment1))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) 
+
+live_graph <- ggplot() +
+  geom_jitter(aes(x = site, y = mean_attack, color = treatment1), width = 0.25, alpha = 0.25, data = live_sum) +
+  geom_point(aes(x = site, y = fit, color = treatment1), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = site, ymax = fit + (se.fit), ymin = fit - (se.fit), color = treatment1), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Simulated \nNoise \nEnvironment", values = two_colors) +
+  scale_y_continuous(limits = c(0, 17000)) +
+  ylab("Time to Attack Cricket in the Lab (ms)") +
+  xlab("Origin") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "right") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) 
+
+ggarrange(artificial_graph, live_graph, ncol = 2, common.legend = TRUE, legend = "right")
+```
+
+```{r prey capture table}
+attack_time_table <- read.csv(file = "data/attack_time_table.csv", header = TRUE) # for predictor stats table
+
+attack_time_table <- attack_time_table %>% 
+  mutate(Stimulus = factor(Stimulus),
+         Stimulus = fct_recode(Stimulus, "Vibrating Toothbrush " = "Vibrating_Toothbrush1",
+                               "Vibrating Toothbrush" = "Vibrating_Toothbrush", "Live Cricket" = "Cricket"),
+         Predictor = factor(Predictor),
+         Predictor = fct_recode(Predictor, "Origin " = "Rural_Urban1",
+                                "Origin" = "Rural_Urban",
+                                "Simulated Noise Environment" = "Treatment",
+                                "Origin x Simulated Noise Environment" = "Int"),
+         #DF = ifelse(is.na(DF), "", "1")
+         )
+
+attack_time_table <- attack_time_table %>% 
+  mutate(Pvalue = factor(Pvalue),
+         Pvalue = fct_recode(Pvalue, 
+                        "< 0.001 ***" = "0.001",
+                        "0.038 *" = "0.038",
+                        "0.024 *" = "0.024",
+                        "0.090 ." = "0.09",
+                        "0.783  " = "0.783",
+                        "0.498  " = "0.498",
+                        "0.269  " = "0.269",
+                        "0.576  " = "0.576",
+                        "0.387  " = "0.387",
+                        "0.650  " = "0.65",
+                        "0.128  " = "0.128"))
+
+colnames(attack_time_table) <- c('Place', 'Stage','Stimulus', 'Predictor', 'χ²-Value', 'P-Value')
+#colnames(attack_time_table) <- c('Place', 'Stage','Stimulus', 'Predictor', 'Post Hoc Subset', 'Post Hoc Comparison', 'DF', 'Test Statistic', 'P-Value')
+
+# flextable(attack_time_table[ , 1:9]) %>% 
+#   autofit() %>% 
+#   merge_v(j = c('Place', 'Stage', 'Stimulus', 'Predictor'), part = "body") %>% 
+#   bold(bold = TRUE, part = "header") %>% 
+#   hline_bottom(part = "body", border = officer::fp_border(width = 2)) %>% 
+#   border(j = 'Place', border.bottom = officer::fp_border(width = 2)) %>% 
+#   hline(i = c("6", "11"), j = c("3":"9"), part = "body", border = officer::fp_border(width = 1, color = "grey")) %>%  
+#    hline(i = c("2", "5", "7", "10"), j = c("4":"9"), part = "body", border = officer::fp_border(width = 1, color = "grey")) %>%  
+#   hline(i = c("11"), part = "body", border = officer::fp_border(width = 2)) %>%  
+#   hline(i = c("1"), part = "body", border = officer::fp_border(width = 2)) %>%   
+#   fontsize(size = 10, part = "all") %>% 
+#   align(align = "center", part = "all") %>% 
+#   valign(valign = "top", part = "all") %>% 
+#   fix_border_issues() %>% 
+#   footnote(i = c(4, 5, 9, 10), j = c(8), ref_symbols = "a", value = as_paragraph("Test statisic from post hoc analyses are z ratio scores. All other test statistics are χ².")) %>%    save_as_image(path = here::here("figures/attack_time_table.png"))
+
+flextable(attack_time_table[ , 1:6]) %>% 
+  autofit() %>% 
+  merge_v(j = c('Place', 'Stage', 'Stimulus', 'Predictor'), part = "body") %>% 
+  bold(bold = TRUE, part = "header") %>% 
+  hline_bottom(part = "body", border = officer::fp_border(width = 2)) %>% 
+  border(j = 'Place', border.bottom = officer::fp_border(width = 2)) %>% 
+  hline(i = c("4"), j = c("3":"6"), part = "body", border = officer::fp_border(width = 1, color = "grey")) %>%  
+  hline(i = c("7"), part = "body", border = officer::fp_border(width = 2)) %>%  
+  hline(i = c("1"), part = "body", border = officer::fp_border(width = 2)) %>%   
+  fontsize(size = 10, part = "all") %>% 
+  align(align = "center", part = "all") %>% 
+  valign(valign = "top", part = "all") %>% 
+  fix_border_issues() %>%    
+  save_as_image(path = here::here("figures/prey_capture_table.png"))
+```
+
+# Rapid Change in Environmental Noise
+
+```{r urban loud loud}
+switch_ull <- switch %>% 
+  filter(site == "Urban",
+         t1_t2 == "Loud_Loud")
+
+shapiro.test(log(switch_ull$attack_time_ms)) # normal
+model <- glm.nb(attack_time_ms ~ trial, data = switch_ull)
+car::Anova(model) # no
+nd <- data.frame(expand.grid(trial = levels(factor(switch$trial))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions_ull <- cbind(nd, predictions) %>% 
+  mutate(t1_t2_abb = "L-L",
+         site = "Urban")
+```
+
+```{r urban loud quiet}
+switch_ulq <- switch %>% 
+  filter(site == "Urban",
+         t1_t2 == "Loud_Quiet")
+shapiro.test(log(switch_ulq$attack_time_ms)) # normal
+model <- glm.nb(attack_time_ms ~ trial, data = switch_ulq)
+car::Anova(model) # no
+nd <- data.frame(expand.grid(trial = levels(factor(switch$trial))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions_ulq <- cbind(nd, predictions) %>% 
+  mutate(t1_t2_abb = "L-Q",
+         site = "Urban")
+```
+
+```{r urban quiet quiet}
+switch_uqq <- switch %>% 
+  filter(site == "Urban",
+         t1_t2 == "Quiet_Quiet")
+shapiro.test(log(switch_uqq$attack_time_ms)) # almost normal
+model <- glm.nb(attack_time_ms ~ trial, data = switch_uqq)
+car::Anova(model) # no
+nd <- data.frame(expand.grid(trial = levels(factor(switch$trial))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions_uqq <- cbind(nd, predictions) %>% 
+  mutate(t1_t2_abb = "Q-Q",
+         site = "Urban")
+```
+
+```{r urban quiet loud}
+switch_uql <- switch %>% 
+  filter(site == "Urban",
+         t1_t2 == "Quiet_Loud")
+shapiro.test(log(switch_uql$attack_time_ms)) # almost normal
+model <- glm.nb(attack_time_ms ~ trial, data = switch_uql)
+car::Anova(model) # no
+nd <- data.frame(expand.grid(trial = levels(factor(switch$trial))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions_uql <- cbind(nd, predictions) %>% 
+  mutate(t1_t2_abb = "Q-L",
+         site = "Urban")
+```
+
+```{r rural loud loud}
+switch_rll <- switch %>% 
+  filter(site == "Rural",
+         t1_t2 == "Loud_Loud")
+shapiro.test(log(switch_rll$attack_time_ms)) # not normal
+model <- glm.nb(attack_time_ms ~ trial, data = switch_rll)
+car::Anova(model) # no
+nd <- data.frame(expand.grid(trial = levels(factor(switch$trial))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions_rll <- cbind(nd, predictions) %>% 
+  mutate(t1_t2_abb = "L-L",
+         site = "Rural")
+```
+
+```{r rural loud quiet}
+switch_rlq <- switch %>% 
+  filter(site == "Rural",
+         t1_t2 == "Loud_Quiet")
+shapiro.test(log(switch_rlq$attack_time_ms)) # normal
+model <- glm.nb(attack_time_ms ~ trial, data = switch_rlq)
+car::Anova(model) # yes
+nd <- data.frame(expand.grid(trial = levels(factor(switch$trial))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions_rlq <- cbind(nd, predictions) %>% 
+  mutate(t1_t2_abb = "L-Q",
+         site = "Rural")
+assumptions(model, switch_rlq)
+```
+
+```{r rural quiet quiet}
+switch_rqq <- switch %>% 
+  filter(site == "Rural",
+         t1_t2 == "Quiet_Quiet")
+shapiro.test(log(switch_rqq$attack_time_ms)) # normal
+model <- glm.nb(attack_time_ms ~ trial, data = switch_rqq)
+car::Anova(model) # no
+nd <- data.frame(expand.grid(trial = levels(factor(switch$trial))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions_rqq <- cbind(nd, predictions) %>% 
+  mutate(t1_t2_abb = "Q-Q",
+         site = "Rural")
+```
+
+```{r rural quiet loud}
+switch_rql <- switch %>% 
+  filter(site == "Rural",
+         t1_t2 == "Quiet_Loud")
+shapiro.test(log(switch_rql$attack_time_ms)) # almost normal
+model <- glm.nb(attack_time_ms ~ trial, data = switch_rql)
+car::Anova(model) # yes
+nd <- data.frame(expand.grid(trial = levels(factor(switch$trial))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions_rql <- cbind(nd, predictions) %>% 
+  mutate(t1_t2_abb = "Q-L",
+         site = "Rural")
+assumptions(model, switch_rql)
+```
+
+```{r switch graph}
+predictions<-rbind(predictions_ull, predictions_ulq, predictions_uqq, predictions_uql,
+                  predictions_rll, predictions_rlq, predictions_rqq, predictions_rql) %>% 
+  mutate(t1_t2_abb = fct_relevel(factor(t1_t2_abb), "Q-Q", "L-L", "L-Q", "Q-L"),
+         site = fct_relevel(site, "Rural", "Urban")) %>% 
+  separate(t1_t2_abb, into = c("treatment1", "treatment2"), sep = "-", remove = FALSE) %>% 
+  mutate(trial = fct_relevel(trial, "Before", "After"),
+        treatment = ifelse(trial == "Before", treatment1, treatment2),
+         treatment = fct_recode(treatment, "Quiet" = "Q", "Loud" = "L"),
+         treatment = fct_relevel(treatment, "Quiet", "Loud"),
+         trial = fct_relevel(trial, "Before", "After")) 
+
+ggplot() +
+  geom_jitter(aes(x = trial, y = attack_time_ms, group = trial, color = treatment), alpha = 0.25, size = 1, data = switch) +
+  geom_line(aes(x = trial, y = fit, group = t1_t2_abb), color = "#666666", linewidth = 0.5, data = predictions) +
+  geom_point(aes(x = trial, y = fit, color = treatment), size = 1.5, data = predictions) +
+  geom_errorbar(aes(x = trial, ymax = fit + (se.fit), ymin = fit - (se.fit), color = treatment), linewidth = 1, width = 0.25, data = predictions) +
+  scale_color_manual("Simulated \nNoise \nEnvironment", values = two_colors) +
+  scale_y_continuous(limits = c(0, 16000)) +
+  ylab("Time to Attack Artificial Stimulus (ms)") +
+  xlab("Before/After Switch on Same Web") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 20, color = "black", family = "sans"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title = element_text(size = 20, color = "black", family = "sans"),
+        legend.text = element_text(size = 20, color = "black", family = "sans"),
+        legend.title = element_text(size = 20, color = "black", family = "sans"),
+        legend.position = "right") +
+  theme(strip.text = element_text(size = 20, color = "black", family="sans")) +
+  facet_grid(site~t1_t2_abb)
+# 600 x 500
+
+switch %>% 
+  group_by(site, t1_t2_abb, trial) %>% 
+  summarize(mean = mean(attack_time), 
+            se = plotrix::std.error(attack_time))
+```
+
+```{r switch table}
+switch_table <- read.csv(file = "data/switch_table.csv", header = TRUE) # for predictor stats table
+
+switch_table <- switch_table %>% 
+  dplyr::select(-DF) %>% 
+  mutate(Pvalue = factor(Pvalue),
+         Pvalue = fct_recode(Pvalue,"0.016 *" = "0.016",
+                        "0.018 *" = "0.018"))
+
+colnames(switch_table) <- c('Same/Switch','Origin','Web-Building Noise Environment', 'Switch Noise Environment', 'χ²', 'P-Value')
+
+flextable(switch_table[ , 1:6]) %>% 
+  autofit() %>% 
+  merge_v(j = c('Same/Switch', 'Origin'), part = "body") %>% 
+  bold(bold = TRUE, part = "header") %>% 
+  hline_bottom(part = "body", border = officer::fp_border(width = 2)) %>% 
+  hline(i = c("2", "4", "6"), j = c("2":"6"), part = "body", border = officer::fp_border(width = 1, color = "grey")) %>%   
+  hline(i = c("4", "8"), j = c("1":"6"), part = "body", border = officer::fp_border(width = 2, color = "black")) %>% 
+  hline(i = c("8"), part = "body", border = officer::fp_border(width = 2)) %>% 
+  fontsize(size = 10, part = "all") %>% 
+  align(align = "center", part = "all") %>% 
+  valign(valign = "top", part = "all") %>% 
+  fix_border_issues() %>% 
+  save_as_image(path = here::here("figures/switch_table.png"))
+```
+
+# Web Structure Measurements
+
+## Silk Mass 
+
+```{r silk mass}
+shapiro.test(web$silk_per_body) # not normal
+model <- lm(silk_per_body ~ site * treatment1, data = web)
+car::Anova(model)
+emmeans(model, pairwise ~ treatment1 | site)
+emmeans(model, pairwise ~ site | treatment1)
+
+nd <- data.frame(expand.grid(site = levels(factor(web$site)),
+                             treatment1 = levels(factor(web$treatment1))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(treatment1 = fct_relevel(treatment1, "Quiet", "Loud"), 
+         site = fct_relevel(site, "Rural", "Urban"))
+
+ggplot() +
+  geom_jitter(aes(x = site, y = silk_per_body, color = treatment1), width = 0.25, alpha = 0.25, data = web) +
+  geom_point(aes(x = site, y = fit, color = treatment1), position = position_dodge(width = 0.25), size = 2.5, data = predictions) +
+  geom_errorbar(aes(x = site, ymax = fit + (se.fit), ymin = fit - (se.fit), color = treatment1), position = position_dodge(width = 0.25), linewidth = 1.25, width = 0.25, data = predictions) +
+  scale_color_manual("Treatment", values = two_colors) +
+  scale_y_continuous(limits = c(0, 135), breaks = seq(0,125, 25)) +
+  ylab("Dry Silk Mass per Body Mass (μg/g)") +
+  xlab("") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans"))
+```
+
+## Web Denseness 
+
+```{r web denseness}
+web %>% 
+  group_by(treatment1, site, Week) %>% 
+  summarize(mean = mean(pic_mean),
+            se = plotrix::std.error(pic_mean)) %>% 
+  ggplot() +
+  geom_point(aes(x = Week, y = mean, color = treatment1)) +
+  geom_errorbar(aes(x = Week, ymax = mean + se, ymin = mean - se, color = treatment1)) +
+  facet_wrap(~ site)
+
+shapiro.test(web$corrected) #normal
+model <- lm(corrected ~ site_t1 * factor(Week), data = web)
+emmeans(model, pairwise ~ site_t1 | Week)
+emmeans(model, pairwise ~ Week | site_t1)
+#model <- step(model)
+emmeans(model, pairwise ~ Week)
+car::Anova(model)
+
+#model <- lm(corrected ~ site * treatment1 * factor(Week), data = web)
+#model <- step(model)
+#emmeans(model, pairwise ~ Week)
+#car::Anova(model)
+
+nd <- data.frame(expand.grid(site_t1 = levels(factor(web$site_t1)),
+                             Week = seq(1,3,1)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>%
+    mutate(site_t1 = fct_relevel(site_t1, "Rural_Quiet", "Urban_Quiet", "Rural_Loud", "Urban_Loud"))
+
+ggplot() +
+  #geom_jitter(aes(x = Week, y = StdDev, color = site_t1), width = 0.25, alpha = 0.25, data = web) +
+    geom_line(aes(x = Week, y = exp(fit), color = site_t1, linewidth = site_t1), position = position_dodge(width = 0.25), data = predictions) +
+  geom_point(aes(x = Week, y = exp(fit), color = site_t1, size = site_t1), position = position_dodge(width = 0.25), data = predictions) +
+  geom_errorbar(aes(x = Week, ymax = exp(fit + (se.fit)), ymin = exp(fit - (se.fit)), color = site_t1, linewidth = site_t1), position = position_dodge(width = 0.25), width = 0.25, data = predictions) +
+  scale_color_manual("", values = c("#1b9e77", "#1b9e77", "#d95f02", "#d95f02")) +
+  scale_linewidth_manual("", values = c(0.5, 1.25, 0.5, 1.25)) +
+  scale_size_manual("", values = c(1.5, 2.5, 1.5, 2.5)) +
+  scale_x_continuous(limits = c(0.5, 3.5), breaks = c(1, 2, 3)) +
+  scale_y_continuous(limits = c(5, 14), breaks = seq(6, 14, 2)) +
+  #scale_y_continuous(limits = c(0, 20000)) +
+  ylab("Web Denseness (Mean Web Gray Value \nCorrected by Black Standard)") +
+  xlab("Week") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  guides(color = guide_legend(nrow = 2))
+
+# by the week
+web1 <- web %>% 
+  filter(Week == 1) %>% 
+  dplyr::select(spider, site, treatment1, silk_per_body, corrected, StdDev)
+shapiro.test(web1$corrected) # normal
+model <- lm(corrected ~ site * treatment1, data = web1)
+car::Anova(model)
+
+web2 <- web %>% 
+  filter(Week == 2) %>% 
+  dplyr::select(spider, site, treatment1, silk_per_body, corrected, StdDev)
+shapiro.test(web2$corrected) # normal
+model <- lm(log(corrected) ~ site * treatment1, data = web2)
+car::Anova(model)
+
+web3 <- web %>% 
+  filter(Week == 3) %>% 
+  dplyr::select(spider, site, treatment1, silk_per_body, corrected, StdDev)
+shapiro.test(web3$corrected) # normal
+model <- lm(log(corrected) ~ site * treatment1, data = web3)
+car::Anova(model)
+```
+
+## Correlation between silk mass and web densesness
+
+```{r silk mass by web denseness}
+web3_silk <- full_join(web3, spider_df, by = c("spider", "site", "treatment1"))
+
+shapiro.test(web3_silk$corrected) # normal
+shapiro.test(web3_silk$silk_per_body) # normal
+model <- lm(scale(corrected) ~ scale(silk_per_body), data = web3_silk)
+summary(model)
+```
+
+## Web Variability
+
+```{r web variability}
+web %>% 
+  group_by(site, treatment1, Week) %>% 
+  summarize(mean = mean(StdDev),
+            se = plotrix::std.error(StdDev)) %>% 
+  ggplot() +
+  geom_point(aes(x = Week, y = mean, color = treatment1)) +
+  geom_errorbar(aes(x = Week, ymax = mean + se, ymin = mean - se, color = treatment1)) +
+  facet_wrap(~ site)
+
+shapiro.test(log(web$StdDev)) # normal
+model <- lm(log(StdDev) ~ site_t1 * factor(Week), data = web)
+car::Anova(model)
+emmeans(model, pairwise ~ site_t1 | Week)
+emmeans(model, pairwise ~ Week | site_t1)
+emmeans(model, pairwise ~ Week)
+emmeans(model, pairwise ~ site_t1)
+
+nd <- data.frame(expand.grid(site_t1 = levels(factor(web$site_t1)),
+                             Week = seq(1,3,1)))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  mutate(site_t1 = fct_relevel(site_t1, "Rural_Quiet", "Urban_Quiet", "Rural_Loud", "Urban_Loud"))
+
+ggplot() +
+  #geom_jitter(aes(x = Week, y = StdDev, color = site_t1), width = 0.25, alpha = 0.25, data = web) +
+    geom_line(aes(x = Week, y = exp(fit), color = site_t1, linewidth = site_t1), position = position_dodge(width = 0.25), data = predictions) +
+  geom_point(aes(x = Week, y = exp(fit), color = site_t1, size = site_t1), position = position_dodge(width = 0.25), data = predictions) +
+  geom_errorbar(aes(x = Week, ymax = exp(fit + (se.fit)), ymin = exp(fit - (se.fit)), color = site_t1, linewidth = site_t1), position = position_dodge(width = 0.25), width = 0.25, data = predictions) +
+  scale_color_manual("", values = c("#1b9e77", "#1b9e77", "#d95f02", "#d95f02")) +
+  scale_linewidth_manual("", values = c(0.5, 1.25, 0.5, 1.25)) +
+  scale_size_manual("", values = c(1.5, 2.5, 1.5, 2.5)) +
+  scale_x_continuous(limits = c(0.5, 3.5), breaks = c(1, 2, 3)) +
+  scale_y_continuous(limits = c(15, 23), breaks = seq(15, 23, 1)) +
+  ylab("Web Variability \n(Std. Dev. Gray Value of the Web)") +
+  xlab("Week") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  guides(color = guide_legend(nrow = 2))
+
+# by the week
+shapiro.test(log(web1$StdDev)) # normal
+model <- lm(log(StdDev) ~ site * treatment1, data = web1)
+car::Anova(model)
+
+shapiro.test(log(web2$StdDev)) # normal
+model <- lm(log(StdDev) ~ site * treatment1, data = web2)
+car::Anova(model)
+
+shapiro.test(log(web3$StdDev)) # normal
+model <- lm(log(StdDev) ~ site * treatment1, data = web3)
+car::Anova(model)
+```
+
+## Web Variability and Time to Attack Artificial Stimulus
+
+```{r stddev by tb}
+prey135 <- artificial_attacked %>% 
+  filter(trial == 1 | trial == 3 | trial ==5) %>% 
+  mutate(Week = ifelse(trial == 1, 1,
+                       ifelse(trial == 3, 2, 3))) %>% 
+  dplyr::select(spider, trial, attack_time, attack_time_ms, Week)
+
+web135 <- full_join(prey135, web, by = c("spider", "Week"))
+
+shapiro.test(log(web135$StdDev)) # normal
+model <- glm.nb(attack_time_ms ~ (StdDev):site_t1, data = web135)
+emmeans(model, ~ site_t1)
+with(summary(model), 1 - deviance/null.deviance)
+model2 <- glm.nb(attack_time_ms ~ (StdDev), data = web135)
+anova(model, model2)
+summary(model)
+car::Anova(model)
+AIC(model) 
+AIC(model2)
+
+nd <- data.frame(expand.grid(StdDev = seq(10, 33, 0.5),
+                             site_t1 = levels(factor(web135$site_t1))))
+predictions <- data.frame(predict(model, newdata = nd, type = "response", 
+                       se.fit = TRUE))
+predictions <- cbind(nd, predictions) %>% 
+  separate(site_t1, into = c("site", "treatment1"), sep = "_", remove = FALSE) %>% 
+  mutate(treatment1 = fct_relevel(treatment1, "Quiet", "Loud"),
+         site = fct_relevel(site, "Rural", "Urban"))
+
+ggplot() +
+  geom_point(aes(x = (StdDev), y = log(attack_time_ms), color = treatment1), alpha = 0.25, data = web135) +
+  geom_line(aes(x = StdDev, y = log(fit), color = treatment1), data = predictions) +
+  geom_ribbon(aes(x = (StdDev), ymax = log(fit + se.fit), ymin = log(fit - se.fit), fill = treatment1), alpha = 0.5, data = predictions) +
+  scale_color_manual("Simulated Noise \nEnvironment", values = two_colors) +
+  scale_fill_manual("Simulated Noise \nEnvironment", values = two_colors) +
+  #scale_y_continuous(limits = c(0, 7000)) +
+  xlab("Web Variability \n(Std. Dev. Gray Value of the Web)") +
+  ylab("Ln Time to Attack Artificial Stimulus (ms)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 14, color = "black", family = "sans"),
+        axis.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.text = element_text(size = 14, color = "black", family = "sans"),
+        legend.title = element_text(size = 14, color = "black", family = "sans"),
+        legend.position = "top") +
+  theme(strip.text = element_text(size = 14, color = "black", family="sans")) +
+  facet_wrap(~ site)
+```

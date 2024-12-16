@@ -1,0 +1,508 @@
+---
+title: "Learning Trials at SCC Animal Behavior Course"
+author: "Brandi Pessman"
+date: "2024-12-16"
+output: html_document
+---
+
+```{r libraries}
+library(tidyverse)
+library(survival) # run tests
+library(survminer) # make plots
+```
+
+```{r import}
+learning <- readRDS("wrangled_data/learning.rds")
+```
+
+# During the first conditioning trial (first ever attack measure), is there a difference between urban and rural spiders?
+
+```{r urban vs rural}
+urban_rural <- learning %>% 
+  filter(Measure == "Conditioning1") %>% 
+  mutate(Site = fct_relevel(Site, "Urban", "Rural"))
+fitur <- survfit(Surv(TimeToAttack, Attacked) ~ Site, data = urban_rural)
+#print(fitur)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Site, data = urban_rural)
+site <- ggsurvplot(fitur,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           fun = "event",
+           surv.median.line = "hv", # Specify median survival
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#d95f02", "#1b9e77"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower------------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "Urban vs Rural",
+           legend.title = "Site",
+           linetype = c("solid", "solid"), # Change line type by groups
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Urban", "Rural"))
+
+#ggsave("figures/site.jpg", site$plot, units = "in", height = 4, width = 4)
+```
+
+# Did rural vs urban spiders learn a postive, negative, or neutral stimuli?
+
+```{r did they learn?}
+splots <- list()
+
+u_positive <- learning %>% 
+  filter(Site == "Urban",
+         Treatment == "Positive") %>% 
+  mutate(Measure = fct_recode(Measure, "Before" = "Conditioning1", "After" = "TestingAvg"),
+         Measure = fct_relevel(Measure, "Before", "After"))
+fitup <- survfit(Surv(TimeToAttack, Attacked) ~ Measure, data = u_positive)
+#print(fitup)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Measure, data = u_positive)
+splots[[1]] <- ggsurvplot(fitup,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           fun = "event",
+           surv.median.line = "hv", # Specify median survival
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#7570b3", "#e6ab02"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower---------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "Urban:Positive",
+           legend.title = "Conditioning",
+           linetype = c("solid", "solid"), # Change line type by groups
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Before", "After"))
+
+u_negative <- learning %>% 
+  filter(Site == "Urban",
+         Treatment == "Negative") %>% 
+  mutate(Measure = fct_recode(Measure, "Before" = "Conditioning1", "After" = "TestingAvg"),
+         Measure = fct_relevel(Measure, "Before", "After"))
+fitun <- survfit(Surv(TimeToAttack, Attacked) ~ Measure, data = u_negative)
+#print(fitun)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Measure, data = u_negative)
+splots[[5]] <- ggsurvplot(fitun,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           fun = "event",
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#7570b3", "#e6ab02"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower---------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "Urban:Negative",
+           legend.title = "Conditioning",
+           linetype = c("solid", "solid"), # Change line type by groups
+           surv.median.line = "hv", # Specify median survival
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Before", "After"))
+
+u_neutral <- learning %>% 
+  filter(Site == "Urban",
+         Treatment == "Neutral") %>% 
+  mutate(Measure = fct_recode(Measure, "Before" = "Conditioning1", "After" = "TestingAvg"),
+         Measure = fct_relevel(Measure, "Before", "After"))
+fitu0 <- survfit(Surv(TimeToAttack, Attacked) ~ Measure, data = u_neutral)
+#print(fitu0)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Measure, data = u_neutral)
+splots[[3]] <- ggsurvplot(fitu0,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           fun = "event",
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           surv.median.line = "hv", # Specify median survival
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#7570b3", "#e6ab02"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower---------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "Urban:Neutral",
+           legend.title = "Conditioning",
+           linetype = c("solid", "solid"), # Change line type by groups
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Before", "After"))
+
+r_positive <- learning %>% 
+  filter(Site == "Rural",
+         Treatment == "Positive") %>% 
+  mutate(Measure = fct_recode(Measure, "Before" = "Conditioning1", "After" = "TestingAvg"),
+         Measure = fct_relevel(Measure, "Before", "After"))
+fitrp <- survfit(Surv(TimeToAttack, Attacked) ~ Measure, data = r_positive)
+#print(fitrp)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Measure, data = r_positive)
+splots[[2]] <- ggsurvplot(fitrp,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           fun = "event",
+           surv.median.line = "hv", # Specify median survival
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#7570b3", "#e6ab02"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower---------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "Rural:Positive",
+           legend.title = "Conditioning",
+           linetype = c("solid", "solid"), # Change line type by groups
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Before", "After"))
+
+r_negative <- learning %>% 
+  filter(Site == "Rural",
+         Treatment == "Negative") %>% 
+  mutate(Measure = fct_recode(Measure, "Before" = "Conditioning1", "After" = "TestingAvg"),
+         Measure = fct_relevel(Measure, "Before", "After"))
+fitrn <- survfit(Surv(TimeToAttack, Attacked) ~ Measure, data = r_negative)
+#print(fitrn)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Measure, data = r_negative)
+splots[[6]] <- ggsurvplot(fitrn,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           fun = "event",
+           surv.median.line = "hv", # Specify median survival
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#7570b3", "#e6ab02"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower---------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "Rural:Negative",
+           legend.title = "Conditioning",
+           linetype = c("solid", "solid"), # Change line type by groups
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Before", "After"))
+
+r_neutral <- learning %>% 
+  filter(Site == "Rural",
+         Treatment == "Neutral") %>% 
+  mutate(Measure = fct_recode(Measure, "Before" = "Conditioning1", "After" = "TestingAvg"),
+         Measure = fct_relevel(Measure, "Before", "After"))
+fitr0 <- survfit(Surv(TimeToAttack, Attacked) ~ Measure, data = r_neutral)
+#print(fitr0)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Measure, data = r_neutral)
+splots[[4]] <- ggsurvplot(fitr0,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           fun = "event",
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           surv.median.line = "hv", # Specify median survival
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#7570b3", "#e6ab02"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower---------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "Rural:Neutral",
+           legend.title = "Conditioning",
+           linetype = c("solid", "solid"), # Change line type by groups
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Before", "After"))
+
+learn <- arrange_ggsurvplots(splots, print = TRUE, ncol = 3, nrow = 2)
+learn
+#ggsave("figures/learn.jpg", learn, units = "in", height = 8, width = 12)
+```
+
+# Does having eggs affect learning of different stimuli?
+
+```{r does having eggs affect learning?}
+eggplots <- list()
+
+eggs_positive <- learning %>% 
+  filter(Eggs2 == "Y",
+         Treatment == "Positive") %>% 
+  mutate(Measure = fct_recode(Measure, "Before" = "Conditioning1", "After" = "TestingAvg"),
+         Measure = fct_relevel(Measure, "Before", "After"))
+fitep <- survfit(Surv(TimeToAttack, Attacked) ~ Measure, data = eggs_positive)
+#print(fitep)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Measure, data = eggs_positive)
+eggplots[[1]] <- ggsurvplot(fitep,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           fun = "event",
+           surv.median.line = "hv", # Specify median survival
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#7570b3", "#e6ab02"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower---------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "Eggs:Positive",
+           legend.title = "Conditioning",
+           linetype = c("solid", "solid"), # Change line type by groups
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Before", "After"))
+
+eggs_negative <- learning %>% 
+  filter(Eggs2 == "Y",
+         Treatment == "Negative") %>% 
+  mutate(Measure = fct_recode(Measure, "Before" = "Conditioning1", "After" = "TestingAvg"),
+         Measure = fct_relevel(Measure, "Before", "After"))
+fiten <- survfit(Surv(TimeToAttack, Attacked) ~ Measure, data = eggs_negative)
+#print(fiten)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Measure, data = eggs_negative)
+eggplots[[5]] <- ggsurvplot(fiten,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           fun = "event",
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#7570b3", "#e6ab02"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower---------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "Eggs:Negative",
+           legend.title = "Conditioning",
+           linetype = c("solid", "solid"), # Change line type by groups
+           surv.median.line = "hv", # Specify median survival
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Before", "After"))
+
+e_neutral <- learning %>% 
+  filter(Eggs2 == "Y",
+         Treatment == "Neutral") %>% 
+  mutate(Measure = fct_recode(Measure, "Before" = "Conditioning1", "After" = "TestingAvg"),
+         Measure = fct_relevel(Measure, "Before", "After"))
+fite0 <- survfit(Surv(TimeToAttack, Attacked) ~ Measure, data = e_neutral)
+#print(fite0)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Measure, data = e_neutral)
+eggplots[[3]] <- ggsurvplot(fite0,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           fun = "event",
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           surv.median.line = "hv", # Specify median survival
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#7570b3", "#e6ab02"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower---------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "Eggs:Neutral",
+           legend.title = "Conditioning",
+           linetype = c("solid", "solid"), # Change line type by groups
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Before", "After"))
+
+n_positive <- learning %>% 
+  filter(Eggs2 == "N",
+         Treatment == "Positive") %>% 
+  mutate(Measure = fct_recode(Measure, "Before" = "Conditioning1", "After" = "TestingAvg"),
+         Measure = fct_relevel(Measure, "Before", "After"))
+fitnp <- survfit(Surv(TimeToAttack, Attacked) ~ Measure, data = n_positive)
+#print(fitnp)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Measure, data = n_positive)
+eggplots[[2]] <- ggsurvplot(fitnp,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           fun = "event",
+           surv.median.line = "hv", # Specify median survival
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#7570b3", "#e6ab02"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower---------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "No Eggs:Positive",
+           legend.title = "Conditioning",
+           linetype = c("solid", "solid"), # Change line type by groups
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Before", "After"))
+
+n_negative <- learning %>% 
+  filter(Eggs2 == "N",
+         Treatment == "Negative") %>% 
+  mutate(Measure = fct_recode(Measure, "Before" = "Conditioning1", "After" = "TestingAvg"),
+         Measure = fct_relevel(Measure, "Before", "After"))
+fitnn <- survfit(Surv(TimeToAttack, Attacked) ~ Measure, data = n_negative)
+#print(fitnn)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Measure, data = n_negative)
+eggplots[[6]] <- ggsurvplot(fitnn,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           fun = "event",
+           surv.median.line = "hv", # Specify median survival
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#7570b3", "#e6ab02"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower---------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "No Eggs:Negative",
+           legend.title = "Conditioning",
+           linetype = c("solid", "solid"), # Change line type by groups
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Before", "After"))
+
+n_neutral <- learning %>% 
+  filter(Eggs2 == "N",
+         Treatment == "Neutral") %>% 
+  mutate(Measure = fct_recode(Measure, "Before" = "Conditioning1", "After" = "TestingAvg"),
+         Measure = fct_relevel(Measure, "Before", "After"))
+fitn0 <- survfit(Surv(TimeToAttack, Attacked) ~ Measure, data = n_neutral)
+#print(fitn0)
+#survdiff(Surv(TimeToAttack, Attacked) ~ Measure, data = n_neutral)
+eggplots[[4]] <- ggsurvplot(fitn0,
+           pval = TRUE, conf.int = TRUE,
+           pval.size = 5,
+           fun = "event",
+           #risk.table = TRUE, # Add risk table
+           #risk.table.col = "strata", # Change risk table color by groups
+           surv.median.line = "hv", # Specify median survival
+           #ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#7570b3", "#e6ab02"),
+           xlim = c(0, 30),
+           break.x.by = 5, 
+           legend = c(0.8, 0.2),
+           ylab = "Proportion of spiders that have attacked\nSlower---------------Faster",
+           xlab = "Time to Attack (seconds)",
+           font.x = c(12, "plain", "black"),
+           font.y = c(12, "plain", "black"),
+           font.tickslab = c(12, "plain", "black"),
+           font.legend = c(12, "plain", "black"),
+           title = "No Eggs:Neutral",
+           legend.title = "Conditioning",
+           linetype = c("solid", "solid"), # Change line type by groups
+           ggtheme = theme(axis.line = element_line(color = "black"),
+                           panel.grid.major = element_blank(),
+                           panel.grid.minor = element_blank(),
+                           panel.border = element_blank(),
+                           panel.background = element_blank()),
+           legend.labs = c("Before", "After"))
+
+eggs <- arrange_ggsurvplots(eggplots, print = TRUE, ncol = 3, nrow = 2)
+eggs
+#ggsave("figures/eggs.jpg", eggs, units = "in", height = 8, width = 12)
+```
