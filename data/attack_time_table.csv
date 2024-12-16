@@ -1,0 +1,8 @@
+Place,Stage,Stimulus,Predictor,Statistic,Pvalue
+Field,Juvenile,Vibrating_Toothbrush1,Rural_Urban1,13.174,0.001
+Lab,Adult,Vibrating_Toothbrush,Rural_Urban,0.076,0.783
+Lab,Adult,Vibrating_Toothbrush,Treatment,4.313,0.038
+Lab,Adult,Vibrating_Toothbrush,Int,1.223,0.269
+Lab,Adult,Cricket,Rural_Urban,0.312,0.576
+Lab,Adult,Cricket,Treatment,0.75,0.387
+Lab,Adult,Cricket,Int,2.315,0.128

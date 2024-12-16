@@ -1,0 +1,19 @@
+Feature,Sex,Predictor,Mean_se,Fvalue,Pvalue
+Age,Female,Rural_Urban,60.15_2.23,0.45,0.506
+Age,Female,Treatment,60.15_2.23,0.21,0.649
+Age,Female,Int,60.15_2.23,0.094,0.761
+Age,Male,Rural_Urban,59.35_2.00,3.052,0.088
+Age,Male,Treatment,59.35_2.00,0.148,0.703
+Age,Male,Int,59.35_2.00,0.004,0.948
+Age,Difference,Rural_Urban,3.02_0.76,1.726,0.196
+Age,Difference,Treatment,3.02_0.76,0.585,0.449
+Age,Difference,Int,3.02_0.76,0.649,0.425
+Condition,Female,Rural_Urban, ,3.434,0.071
+Condition,Female,Treatment, ,0.002,0.963
+Condition,Female,Int, ,0.648,0.425
+Condition,Male,Rural_Urban,  ,0.848,0.363
+Condition,Male,Treatment,  ,0.156,0.695
+Condition,Male,Int,  ,0.57,0.455
+Condition,Difference,Rural_Urban,   ,2.009,0.164
+Condition,Difference,Treatment,   ,1.048,0.312
+Condition,Difference,Int,   ,0.009,0.926

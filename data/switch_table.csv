@@ -1,0 +1,9 @@
+Same_Switch,Rural_Urban,Web_treatment,Switch_treatment,DF,Chisq,Pvalue
+Same,Rural,Quiet,Quiet,1,0.191,0.662
+Same,Rural,Loud,Loud,1,2.643,0.104
+Same,Urban,Quiet,Quiet,1,0.293,0.588
+Same,Urban,Loud,Loud,1,0.043,0.835
+Switch,Rural,Quiet,Loud,1,5.819,0.016
+Switch,Rural,Loud,Quiet,1,5.567,0.018
+Switch,Urban,Quiet,Loud,1,0.002,0.963
+Switch,Urban,Loud,Quiet,1,0.278,0.598

@@ -1,0 +1,10 @@
+Stage,Predictor,Chisq,Pvalue
+PreQuiescence,Rural_Urban,0.213,0.644
+PreQuiescence,Treatment,0.197,0.657
+PreQuiescence,Int,3.953,0.047
+PreCopulation,Rural_Urban,10.129,0.001
+PreCopulation,Treatment,0.54,0.462
+PreCopulation,Int,0.183,0.669
+Copulation,Rural_Urban,0.345,0.557
+Copulation,Treatment,0.002,0.965
+Copulation,Int,0.539,0.463
